@@ -1,0 +1,47 @@
+{
+  "skill_name": "clawdot-takeout",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "有点饿了，中午吃什么好",
+      "expected_output": "根据午餐时段推荐品类和店铺，主动推荐2-3家，口语化中文交流",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "来杯瑞幸生椰拿铁",
+      "expected_output": "直接搜索瑞幸，快速定位生椰拿铁，简化规格选择，一条龙走完流程",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "想喝点什么，最好冰的",
+      "expected_output": "推荐饮品类店铺，记住冰的偏好并在选品时主动应用到属性中",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "我不在公司，送到家里",
+      "expected_output": "使用 addresses action 列出已保存地址，匹配'家'标签或让用户确认，切换配送地址后继续点餐流程",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "来两杯拿铁一杯美式",
+      "expected_output": "正确处理多商品下单，items 数组包含多个条目各自数量正确，预览订单显示所有商品",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "我的外卖到哪了",
+      "expected_output": "使用 order_status action 查询最近订单状态，直接告诉用户配送进度",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "要个新地址，送到南京市鼓楼区中山路200号",
+      "expected_output": "用 addresses --address-keyword 搜索地址，从 suggestions 中选择匹配项的 token，问齐收件人姓名/手机/门牌后用 --select-token 保存",
+      "files": []
+    }
+  ]
+}
