@@ -78,6 +78,22 @@
   install.sh tar 解包未校验成员路径、build.py 打包 scripts 无 denylist、curl|bash 指向 main、
   裸 socket Redis 解析的粘包风险、stderr/recovery 文案含未脱敏手机号。
 
+### D9. 对照官方《API接口说明文档 v1.5》逐接口核对（2026-06-30）
+- **接口契约面：与 v1.5 逐字段吻合（且实测）**——auth 头、所有 path、请求体字段、items 模型
+  （`item_id/sku_id?/quantity/ingredient_option_ids?/remark?`）、出参字段名（`saved_addresses`/
+  `suggestions[].token`/`shop_id`/`cart_id`/`sku_options`/`ingredient_options[].option_id`/`preview_id`/
+  `confirmation_token`/`payment_action.action_url`/金额分）全部对齐；v1.5 新增字段（`original_price`、
+  items 的 `specs`/`selected_ingredients`、SKU 专属 `ingredient_options`）整段透传自动带上。
+- **错误码：文档 §13 外部码 ≠ 当前部署内部码（实测）**——部署实返 `CONSENT_GRANT_*`/`AUTH_INVALID`/
+  `SHOP_NOT_FOUND`/`ORDER_FAILED`/`IDEMPOTENCY_CONFLICT` 等（已实测）；文档 §13 列的是另一套外部码
+  （`CAPABILITY_FORBIDDEN`/`ADDRESS_REQUIRED`/`SHOP_UNAVAILABLE`/`ITEM_UNAVAILABLE`/`CART_CONTEXT_EXPIRED`/
+  `CONFIRMATION_CONFLICT`/`ORDER_CREATE_FAILED`/`PRICE_CHANGED`/`CONFIRMATION_REQUIRED`/`AUTH_EXPIRED`/
+  `BINDING_LIMIT_REACHED`）。**处理**：把两套码都并进错误 playbook（实测码 + 文档码），并捕获错误
+  `next_action`（文档 §12.3 的稳定路由信号；当前部署不返回→前瞻兼容、不影响实测）消解 `AUTH_REQUIRED`
+  在「文档=用户未授权」vs「部署=api_key 缺失」的语义歧义。verify G7 覆盖。
+- **delete_address（§7.4）/ get_user_auth_status / get_homepage_url / sign / coupons**：文档有、本 skill
+  未接 action（D7 同口径，保持与旧 skill 功能等价，不主动引入）。客户端按需可补。
+
 ## 验收标准（可证伪）
 
 ### 机器可判定（写入 verify.sh 硬 gate，绿才算 done）
@@ -98,6 +114,10 @@
 - **G6 绑定回写 + 解析优先级单测**（D2 核心）：`verify_code` 成功后把 `CONSENT_GRANT_ID=<cg>` upsert 进 `.env`
   （保留其它键、`persisted_to_env=true`）、下一次读 env 即得该 cg；`resolve_consent_grant(None)` 优先级
   env → 缓存唯一 → 多个 die 要求 --phone。
+- **G7 文档 v1.5 §13 错误码全覆盖单测**（D9）：每个文档外部错误码（含 `CAPABILITY_FORBIDDEN`/`ADDRESS_REQUIRED`/
+  `SHOP_UNAVAILABLE`/`ITEM_UNAVAILABLE`/`CART_CONTEXT_EXPIRED`/`CONFIRMATION_CONFLICT`/`ORDER_CREATE_FAILED`/
+  `PRICE_CHANGED`/`CONFIRMATION_REQUIRED`/`AUTH_EXPIRED`/`BINDING_LIMIT_REACHED`）映射到定向 RECOVERY（非通用兜底）；
+  `AUTH_REQUIRED` 带 `next_action=request_user_bind` 走绑定恢复、否则走 api_key 提示。
 
 ### 人核（无法自动：需真实 API_KEY + 线上 open-gateway + 真实用户授权 cg，成本=真实下单花钱+真人验证码）
 - H1：端到端真跑一单（search→menu→preview→order→order_status）拿到真实付款链接。
