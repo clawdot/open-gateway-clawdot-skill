@@ -1,0 +1,71 @@
+name: takeout
+display_name: ClawDot 外卖助手
+description: >
+  通过 ClawDot open-gateway 外卖网关帮用户点外卖。
+  支持搜店、选菜、下单、查单全流程；鉴权两选一：
+  personal（CONSENT_GRANT_ID）/ 用户绑定（短信验证码默认，可选 H5 链接授权，拿到用户 consent_grant）。
+version: 1.0.0
+license: MIT
+author: clawdot
+
+category: life-services
+tags: [food, delivery, ordering]
+locale: zh-CN
+
+# 鉴权一条线：只需注入 API_KEY（agent）；用户走一次 SMS/H5 绑定拿 cg（=一个用户），
+# verify 成功后自动回写 CONSENT_GRANT_ID 到 .env，之后业务调用无需 --phone（单用户）。
+# 多用户：一个 api_key 服务多个用户，各自绑定、调用带 --phone 指定（按手机号缓存）。
+# open-gateway 无 admin 静默绑定（旧 agent/trustedBind 已移除）。
+auth_model: personal_or_user_binding
+
+requires:
+  bins: [python3]
+  env:
+    - name: GATEWAY_URL
+      description: ClawDot open-gateway API 地址（未配置时脚本引导用户完成配置并给出默认公网地址）
+      optional: true
+    - name: API_KEY
+      description: ClawDot open-gateway API 密钥（clw_；未配置时返回 RECOVERY[API_KEY_MISSING] 引导用户去注册页获取）
+      optional: true
+    - name: CONSENT_GRANT_ID
+      description: 用户授权凭证（cg_，=一个用户）；开局留空——用户走一次 SMS/H5 绑定后由 verify_code 自动回写本项，之后无需 --phone。也可手动预注入长效 cg 跳过绑定
+      optional: true
+    - name: REDIS_URL
+      description: 可选 Redis 连接串，用于跨进程共享按手机号缓存的 consent_grant
+      optional: true
+    - name: CLAWDOT_SETUP_URL
+      description: API_KEY 缺失时引导用户注册/登录的页面地址（默认 ClawDot developer 登录页）
+      optional: true
+    - name: DEFAULT_LAT
+      description: 默认纬度（personal 模式冷启动兜底；用户绑定模式忽略）
+      optional: true
+    - name: DEFAULT_LNG
+      description: 默认经度（personal 模式冷启动兜底；用户绑定模式忽略）
+      optional: true
+
+entry_point: scripts/takeout.py
+
+actions:
+  - name: addresses
+    description: 查询、搜索、新建收货地址（支持 --city 强制走城市搜索）
+  - name: search
+    description: 按关键词搜索附近店铺（返回每店上下文，供后续选菜/下单复用）
+  - name: recommend
+    description: 搜店 + 并行取 top N 家菜单一步到位
+  - name: menu
+    description: 菜单钻取（概览→分类→商品详情；--shop-keyword 跨分类搜菜；商品详情含 sku_options / ingredient_options）
+  - name: preview
+    description: 预览订单（价格、配送费、优惠），返回 preview_id + confirmation_token
+  - name: order
+    description: 确认并提交订单（--preview-id + --confirmation-token，返回付款链接）
+  - name: order_status
+    description: 查询订单配送状态
+  - name: request_code
+    description: 用户绑定第 1 步（默认发短信验证码；--auth-type h5 签发授权链接）
+  - name: verify_code
+    description: 用户绑定第 2 步（短信验码 / H5 轮询授权结果），成功后缓存 consent_grant
+
+platforms:
+  - claude-code
+  - openclaw
+  - codex
