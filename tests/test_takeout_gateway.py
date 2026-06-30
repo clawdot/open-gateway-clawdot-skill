@@ -380,6 +380,41 @@ def test_consent_error_mapping() -> None:
     check("consent.required_maps_invalid", "RECOVERY[CONSENT_INVALID]" in required, required)
 
 
+# ── doc v1.5 §13 error codes all map to a tailored RECOVERY (not generic) ─────
+
+def test_doc_v15_error_codes() -> None:
+    DOC = {
+        "AUTH_EXPIRED": "CONSENT_EXPIRED",
+        "CAPABILITY_FORBIDDEN": "CAP_NOT_BOUND",
+        "BINDING_LIMIT_REACHED": "BINDING_LIMIT_REACHED",
+        "ADDRESS_REQUIRED": "ADDR_MISSING",
+        "DETAIL_REQUIRED": "POI_DETAIL_REQUIRED",
+        "SUGGESTION_EXPIRED": "SUGGESTION_EXPIRED",
+        "PUBLIC_REFERENCE_INVALID": "REFERENCE_STALE",
+        "SHOP_UNAVAILABLE": "SHOP_CLOSED",
+        "ITEM_UNAVAILABLE": "ITEM_SOLD_OUT",
+        "CART_CONTEXT_EXPIRED": "REFERENCE_STALE",
+        "COUPON_UNAVAILABLE": "COUPON_ISSUE",
+        "COUPON_CONTEXT_EXPIRED": "COUPON_ISSUE",
+        "PRICE_CHANGED": "PRICE_CHANGED",
+        "CONFIRMATION_REQUIRED": "CONFIRMATION_REQUIRED",
+        "CONFIRMATION_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "ORDER_CREATE_FAILED": "ORDER_GENERIC_FAIL",
+    }
+    for code, expect in DOC.items():
+        msg = takeout.friendly_error(takeout.GatewayError(400, code, f"{code} doc message"))
+        check(f"docerr.{code}",
+              f"RECOVERY[{expect}]" in msg and "请求失败" not in msg, msg)
+    # AUTH_REQUIRED carrying a binding next_action (doc semantics) → bind recovery
+    m = takeout.friendly_error(
+        takeout.GatewayError(401, "AUTH_REQUIRED", "用户未授权", "request_user_bind"))
+    check("docerr.auth_required_via_next_action",
+          "RECOVERY[USER_NOT_BOUND_NEEDS_SMS]" in m, m)
+    # AUTH_INVALID without binding next_action (deployment semantics) → api_key msg
+    m2 = takeout.friendly_error(takeout.GatewayError(401, "AUTH_INVALID", "API Key is invalid"))
+    check("docerr.auth_invalid_apikey", "API_KEY" in m2, m2)
+
+
 def main() -> int:
     global _CFG
     _CFG = _cfg("cg_personal")
@@ -392,6 +427,7 @@ def main() -> int:
     test_env_writeback()
     test_gateway_url_normalization()
     test_consent_error_mapping()
+    test_doc_v15_error_codes()
 
     print(f"PASS {len(_RESULTS)} checks")
     if _FAILS:

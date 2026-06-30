@@ -150,10 +150,13 @@ def mask_phone(phone: str) -> str:
 # ── Gateway Client ──────────────────────────────────────────────────────────
 
 class GatewayError(Exception):
-    def __init__(self, status: int, code: str, message: str):
+    def __init__(self, status: int, code: str, message: str, next_action: str | None = None):
         super().__init__(message)
         self.status = status
         self.code = code
+        # Doc v1.5 §12.3: every error may carry a next_action enum — a more stable
+        # routing signal than the code string (which differs doc vs deployment).
+        self.next_action = next_action
 
 
 class GatewayClient:
@@ -202,6 +205,7 @@ class GatewayClient:
                 e.code,
                 err.get("code", "UNKNOWN"),
                 err.get("message", e.reason),
+                err.get("next_action"),
             ) from None
         except URLError as e:
             raise GatewayError(0, "NETWORK", str(e.reason)) from None
@@ -729,7 +733,7 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "把用户选中项的 option_id 放进 items[].ingredient_option_ids 重 preview。"
      "**禁止替用户做主**——口味/规格类让用户选，别自动选。"),
 
-    (r"COORDS_REQUIRED|无法确定.*位置|需要地址|缺.*坐标",
+    (r"COORDS_REQUIRED|ADDRESS_REQUIRED|无法确定.*位置|需要地址|缺.*坐标|缺少收货地址",
      "ADDR_MISSING",
      "缺用户坐标。",
      "直接问用户'你这会儿在哪边呀？地址直接说就行～'，拿到后 "
@@ -753,7 +757,7 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "地址 sug_ref 已过期。",
      "addresses --address-keyword '<用户原话地址>' 重拿新 sug_ref，再 select。"),
 
-    (r"PUBLIC_REFERENCE_INVALID|cart_id|shop_id and cart_id|未找到.*商品|item",
+    (r"PUBLIC_REFERENCE_INVALID|CART_CONTEXT_EXPIRED|cart_id|shop_id and cart_id|购物车上下文|未找到.*商品|未在.*菜单",
      "REFERENCE_STALE",
      "店铺/商品/购物车引用已失效。",
      "shop_id 或 item_id 已过期（菜单上下文有 TTL）。重新 search/recommend 拿新 shop_id，"
@@ -778,23 +782,39 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "menu --shop-id {shop_id} 翻菜单挑 1-2 个低价单品（饮料/小食），"
      "或告诉用户差多少让用户决定加什么。涉及花钱必须用户点头。"),
 
-    (r"closed|not open|店铺.*打烊|休息|未营业|SHOP_NOT_FOUND",
+    (r"closed|not open|SHOP_UNAVAILABLE|SHOP_NOT_FOUND|店铺.*打烊|休息|未营业|店铺不可下单",
      "SHOP_CLOSED",
      "店铺暂未营业。",
      "recommend --shop-keyword '<同品类>' --lat --lng 推同类其他店。不要重试同店。"),
 
-    (r"out of stock|sold out|售罄|缺货",
+    (r"out of stock|sold out|ITEM_UNAVAILABLE|售罄|缺货|商品不可购买",
      "ITEM_SOLD_OUT",
      "部分商品已售罄。",
      "menu --shop-id {shop_id} 找同款替代（同分类下其他 item），拿替代款给用户确认后再 preview。不要自动替换。"),
 
-    (r"ORDER_FAILED|ELEME_ERROR|Order render failed|Order creation failed",
+    (r"PRICE_CHANGED|价格.*变",
+     "PRICE_CHANGED",
+     "价格发生变化。",
+     "用同样的 shop_id/address_id/items 重新 preview 拿最新价格 + 新的 preview_id/confirmation_token，"
+     "向用户确认新价后再 order。"),
+
+    (r"CONFIRMATION_REQUIRED|缺少用户确认令牌",
+     "CONFIRMATION_REQUIRED",
+     "缺确认令牌。",
+     "order 必须带 preview 返回的 --preview-id 和 --confirmation-token；缺了就先 preview 再 order。"),
+
+    (r"COUPON_UNAVAILABLE|COUPON_CONTEXT_EXPIRED|优惠券.*不可用|优惠券上下文",
+     "COUPON_ISSUE",
+     "优惠券不可用或已过期。",
+     "重新 preview（不带该券）拿当前可用券与价格；让用户重选或不用券后再 order。"),
+
+    (r"ORDER_FAILED|ORDER_CREATE_FAILED|ELEME_ERROR|Order render failed|Order creation failed|创建订单失败",
      "ORDER_GENERIC_FAIL",
      "订单创建/预览失败。",
      "menu --shop-id {shop_id} 重看商品状态（是否下架），逐项核对 item_id/sku_id 后重 preview。"
      "如多次失败，告诉用户换家或调整组合。"),
 
-    (r"IDEMPOTENCY_CONFLICT",
+    (r"IDEMPOTENCY_CONFLICT|CONFIRMATION_CONFLICT|确认令牌已被",
      "IDEMPOTENCY_CONFLICT",
      "下单参数与已用确认凭证不一致。",
      "confirmation_token 已被另一组参数消费。用同样的 shop_id/address_id/items 重新 preview 拿新的 "
@@ -803,7 +823,7 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
     # Match the EXPIRED *code* only — NOT a generic "expired" in the message:
     # CONSENT_GRANT_INVALID's message is "invalid or expired", which must route to
     # CONSENT_INVALID below (a never-bound user is "not bound", not "expired").
-    (r"CONSENT_GRANT_EXPIRED|授权.*过期",
+    (r"CONSENT_GRANT_EXPIRED|AUTH_EXPIRED|授权.*过期",
      "CONSENT_EXPIRED",
      "用户授权已过期。",
      "引导该用户重新授权：request_code --phone {phone} → verify_code（短信），"
@@ -820,10 +840,15 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "该手机号没有可绑定的淘宝闪购/饿了么账号。",
      "告诉用户：先用该手机号登录或开通淘宝闪购/饿了么后再绑定。换个已开通的手机号也行。"),
 
-    (r"CAP_NOT_BOUND|PROVIDER_NOT_AVAILABLE",
+    (r"CAP_NOT_BOUND|CAPABILITY_FORBIDDEN|PROVIDER_NOT_AVAILABLE",
      "CAP_NOT_BOUND",
      "该 agent 未开通外卖能力。",
      "这是平台侧配置：联系 ClawDot 平台为该 API_KEY 开通 delivery 能力后再用。不是用户能自助解决的。"),
+
+    (r"BINDING_LIMIT_REACHED",
+     "BINDING_LIMIT_REACHED",
+     "该 agent 已达可绑定用户数上限。",
+     "平台侧配额问题：先对某个已绑用户走解绑（或联系 ClawDot 提升 max_bindings 配额）再绑新用户。"),
 
     (r"还没绑定|USER_NOT_BOUND",
      "USER_NOT_BOUND_NEEDS_SMS",
@@ -874,6 +899,17 @@ def friendly_error(err: GatewayError, ctx: dict | None = None) -> str:
 
     Matches against both error.code and error.message so structured codes and
     upstream business messages both route to the playbook."""
+    # Doc v1.5 §12.3: error.next_action is the stable routing signal. A binding
+    # next_action means the user must (re)authorize — route there regardless of the
+    # code string (handles doc's AUTH_REQUIRED="用户未授权" vs deployment's
+    # AUTH_REQUIRED="api key missing"). The current deployment omits next_action,
+    # so this is forward-compat and a no-op against today's gateway.
+    if (err.next_action or "") in ("request_user_bind", "request_bind", "verify_user_bind"):
+        found = _lookup_by_code("USER_NOT_BOUND_NEEDS_SMS")
+        if found:
+            _c, user_msg, hint = found
+            return f"{user_msg}\nRECOVERY[USER_NOT_BOUND_NEEDS_SMS]: {_format_recovery(hint, ctx)}"
+
     if err.code in ("AUTH_REQUIRED", "AUTH_INVALID"):
         return "API_KEY 无效或缺失，请检查 .env 的 API_KEY 配置。"
 
