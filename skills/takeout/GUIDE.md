@@ -320,6 +320,15 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 不想选可以直接来个香辣鸡腿堡，再搭个粗薯就是一顿了——或者你想看看别的？
 </example>
 
+#### 🍲 店铺必选组（menu 概览带 `required_groups` 时必看）
+
+有些店（麻辣烫、部分套餐店）**整单必须再点一类商品**才能下单。menu 概览返回 `required_groups[]` 时：
+
+- 每组给了 `name`（如「必选好汤」）、`min_select`（选几个）、`candidates`（可选的汤/主食，带名称/价格）。
+- 展菜单时**顺带把这组亮出来让用户挑**（"这家要配个汤底，草本骨汤还是番茄汤？"），选中的 candidate 当普通商品一起进 items[]。
+- 别自己替用户选。忘了选 → preview 会报 `MISSING_REQUIRED_SELECTION`，按 Step 5 的回收提示补。
+- 商品详情里若带 `min_purchase`（起购份数 >1）或 `available_quantity`（0=售罄、数字=余量），下单量要照着来、售罄的别推。
+
 ### Step 4.5: 用户选了菜 → 确认规格（有 sku_options / ingredient_options 时）
 
 ```
@@ -369,7 +378,9 @@ items JSON 用 open-gateway 形态（id 全部来自当前店 menu 输出）：
 - `RECOVERY[REFERENCE_STALE]`（PUBLIC_REFERENCE_INVALID）→ shop_id / item_id / sku_id / cart 已过期：
   重新 search/recommend 拿新 shop_id，再 menu --shop-id 拿新 item_id / sku_id / option_id，然后重 preview。**禁止跨店复用 id、禁止把中文菜名当 item_id。**
 - `RECOVERY[SHOP_CART_MISS]` → 这家店还没搜过（或上下文过期）：先 search --shop-keyword '<店名/品类>'（或 recommend），再用返回的 shop_id 重试。
-- `RECOVERY[MUST_PICK_REQUIRED]` → 网关要求加必选项：menu --shop-id --item-id 看 ingredient_options 的必选组（group_name），把用户选中项的 option_id 收进 items[].ingredient_option_ids 重 preview。偏好类（锅底/糖度/温度/辣度）**列给用户选，禁止替用户做主**。
+- `RECOVERY[MUST_PICK_REQUIRED]` → 网关要求加必选项（**商品内部**的加料必选组）：menu --shop-id --item-id 看 ingredient_options 的必选组（group_name），把用户选中项的 option_id 收进 items[].ingredient_option_ids 重 preview。偏好类（锅底/糖度/温度/辣度）**列给用户选，禁止替用户做主**。
+- `RECOVERY[MISSING_REQUIRED_SELECTION]` → **店铺级必选组**（整单必须再点一个商品，如麻辣烫「必选好汤」，和上面的商品内部必选组是两回事）：menu --shop-id 看返回的 `required_groups[]`，从每组 `candidates` 里按 `min_select` 选够，作为普通商品加进 items[] 重 preview。**列给用户选，别替用户做主。**
+- `RECOVERY[BELOW_MIN_PURCHASE]` → 某商品**起购份数**没达标（≠ 整单未达起送价）：把该商品的 quantity 提到菜单详情里的 `min_purchase` 及以上重 preview，或让用户换个无起购限制的商品。加量/加钱先跟用户说一声。
 
 **Preview 输出模板**（一段话，不用小票格式）：
 

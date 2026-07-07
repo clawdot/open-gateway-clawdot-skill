@@ -150,10 +150,13 @@ def mask_phone(phone: str) -> str:
 # ── Gateway Client ──────────────────────────────────────────────────────────
 
 class GatewayError(Exception):
-    def __init__(self, status: int, code: str, message: str):
+    def __init__(self, status: int, code: str, message: str, next_action: str | None = None):
         super().__init__(message)
         self.status = status
         self.code = code
+        # Doc v1.5 §12.3: every error may carry a next_action enum — a more stable
+        # routing signal than the code string (which differs doc vs deployment).
+        self.next_action = next_action
 
 
 class GatewayClient:
@@ -202,6 +205,7 @@ class GatewayClient:
                 e.code,
                 err.get("code", "UNKNOWN"),
                 err.get("message", e.reason),
+                err.get("next_action"),
             ) from None
         except URLError as e:
             raise GatewayError(0, "NETWORK", str(e.reason)) from None
@@ -586,6 +590,29 @@ def _item_overview(item: dict) -> dict:
     }
 
 
+def _trim_required_groups(menu: dict) -> list[dict]:
+    """Store-level required item groups (doc v1.6, e.g. 麻辣烫「必选好汤」): the whole
+    order must include ≥min_select from each group's candidates, else preview_order
+    rejects with MISSING_REQUIRED_SELECTION (HTTP 400). Surface them up front so the
+    agent lets the user pick a candidate instead of dead-ending at preview. Distinct
+    from an item-internal required option group (那走 MUST_PICK_REQUIRED)."""
+    groups: list[dict] = []
+    for g in menu.get("required_groups", []) or []:
+        if not isinstance(g, dict):
+            continue
+        candidates = [
+            {"item_id": c.get("item_id"), "name": c.get("name"),
+             "price": c.get("price"), "available": c.get("available", True)}
+            for c in (g.get("candidates") or []) if isinstance(c, dict)
+        ]
+        groups.append({
+            "name": g.get("name"),
+            "min_select": g.get("min_select", 1),
+            "candidates": candidates,
+        })
+    return groups
+
+
 def build_menu_overview(menu: dict, compact: bool = False) -> dict:
     """Build a category overview from an open-gateway shop menu response.
 
@@ -614,13 +641,21 @@ def build_menu_overview(menu: dict, compact: bool = False) -> dict:
     if compact:
         categories = categories[:5]
 
-    return {
+    result: dict = {
         "shop_id": shop.get("shop_id"),
         "shop_name": shop.get("name", ""),
         "available": shop.get("available", True),
         "categories": categories,
         "total_items": menu.get("total_items"),
     }
+    required_groups = _trim_required_groups(menu)
+    if required_groups:
+        result["required_groups"] = required_groups
+        result["required_groups_hint"] = (
+            "这家店有店铺级必选组：整单必须从每组 candidates 里按 min_select 选够商品，"
+            "作为普通商品加进下单 items[]（可连同规格/加料一起）。列给用户选，别替用户做主。"
+        )
+    return result
 
 
 def build_category_detail(menu: dict, category: str) -> dict | None:
@@ -669,6 +704,18 @@ def build_item_detail(item: dict) -> dict:
         "category_name": item.get("category_name"),
         "description": item.get("description"),
     }
+    # min_purchase (doc v1.7): 起购份数，≥1（1=无约束）。>1 时下单 quantity 必须达标，
+    # 否则 preview 报 BELOW_MIN_PURCHASE——提前透出让 agent 把量提够。
+    min_purchase = item.get("min_purchase")
+    if isinstance(min_purchase, int) and min_purchase > 1:
+        detail["min_purchase"] = min_purchase
+        detail["min_purchase_hint"] = (
+            f"起购 {min_purchase} 份：下单 quantity 必须 ≥ {min_purchase}，否则 preview 报 BELOW_MIN_PURCHASE。"
+        )
+    # available_quantity (doc v1.8): 库存余量（份）。0=售罄、正整数=剩余可购、null=充足或未知。
+    aq = item.get("available_quantity")
+    if aq is not None:
+        detail["available_quantity"] = aq
     sku_options = item.get("sku_options") or []
     if sku_options:
         detail["sku_options"] = sku_options
@@ -722,6 +769,16 @@ def normalize_address_search(raw: dict) -> dict:
 # upstream business messages (起送/打烊/售罄) route to the same playbook.
 
 ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
+    # 店铺级必选组（doc v1.6）：整单必须再点一个商品（如麻辣烫「必选好汤」）。
+    # 放在 MUST_PICK_REQUIRED 之前——它的 `必选` 太宽会先吞掉这条；靠 code 精确命中。
+    (r"MISSING_REQUIRED_SELECTION|必选商品组|必选组.*未选|缺.*必选组",
+     "MISSING_REQUIRED_SELECTION",
+     "店铺必选商品组未选满。",
+     "这家店整单必须从某个必选组选够（如麻辣烫「必选好汤」，跟商品内部的加料必选组是两回事）。"
+     "menu --shop-id {shop_id} 看返回的 required_groups[]，从每组 candidates 里按 min_select 选够商品，"
+     "作为普通商品加进 items[] 再 preview。让用户选具体哪个，禁止替用户做主。"),
+
+    # 商品内部必选做法组（如必选温度/糖度）：某商品自己内部必须选够 option。
     (r"店铺必须商品未点|必选商品未点|必须先购买|必选",
      "MUST_PICK_REQUIRED",
      "店铺要求必选项未点。",
@@ -729,7 +786,7 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "把用户选中项的 option_id 放进 items[].ingredient_option_ids 重 preview。"
      "**禁止替用户做主**——口味/规格类让用户选，别自动选。"),
 
-    (r"COORDS_REQUIRED|无法确定.*位置|需要地址|缺.*坐标",
+    (r"COORDS_REQUIRED|ADDRESS_REQUIRED|无法确定.*位置|需要地址|缺.*坐标|缺少收货地址",
      "ADDR_MISSING",
      "缺用户坐标。",
      "直接问用户'你这会儿在哪边呀？地址直接说就行～'，拿到后 "
@@ -753,7 +810,7 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "地址 sug_ref 已过期。",
      "addresses --address-keyword '<用户原话地址>' 重拿新 sug_ref，再 select。"),
 
-    (r"PUBLIC_REFERENCE_INVALID|cart_id|shop_id and cart_id|未找到.*商品|item",
+    (r"PUBLIC_REFERENCE_INVALID|CART_CONTEXT_EXPIRED|cart_id|shop_id and cart_id|购物车上下文|未找到.*商品|未在.*菜单",
      "REFERENCE_STALE",
      "店铺/商品/购物车引用已失效。",
      "shop_id 或 item_id 已过期（菜单上下文有 TTL）。重新 search/recommend 拿新 shop_id，"
@@ -772,29 +829,52 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "保留地址，recommend --shop-keyword '<同品类>' --lat --lng --top-n 4 推荐其他店；"
      "或告诉用户'这家不送你这边，换家行不'。禁止换地址重试，禁止用同 shop_id 重 preview。"),
 
+    # 单品起购份数不足（doc v1.7）——与「整单未达起送价」是两码事，放前面精确命中。
+    (r"BELOW_MIN_PURCHASE|低于起购|起购份数|起购下限",
+     "BELOW_MIN_PURCHASE",
+     "商品数量低于起购份数。",
+     "该商品有起购份数要求（menu 商品详情里的 min_purchase）。把对应商品的 quantity 提到 min_purchase 及以上重 preview；"
+     "或让用户换个无起购限制的商品。加量/加钱先跟用户说一声。"),
+
     (r"min order|minimum|未达起送价|起送",
      "BELOW_MIN_ORDER",
      "未达起送价。",
      "menu --shop-id {shop_id} 翻菜单挑 1-2 个低价单品（饮料/小食），"
      "或告诉用户差多少让用户决定加什么。涉及花钱必须用户点头。"),
 
-    (r"closed|not open|店铺.*打烊|休息|未营业|SHOP_NOT_FOUND",
+    (r"closed|not open|SHOP_UNAVAILABLE|SHOP_NOT_FOUND|店铺.*打烊|休息|未营业|店铺不可下单",
      "SHOP_CLOSED",
      "店铺暂未营业。",
      "recommend --shop-keyword '<同品类>' --lat --lng 推同类其他店。不要重试同店。"),
 
-    (r"out of stock|sold out|售罄|缺货",
+    (r"out of stock|sold out|ITEM_UNAVAILABLE|售罄|缺货|商品不可购买",
      "ITEM_SOLD_OUT",
      "部分商品已售罄。",
      "menu --shop-id {shop_id} 找同款替代（同分类下其他 item），拿替代款给用户确认后再 preview。不要自动替换。"),
 
-    (r"ORDER_FAILED|ELEME_ERROR|Order render failed|Order creation failed",
+    (r"PRICE_CHANGED|价格.*变",
+     "PRICE_CHANGED",
+     "价格发生变化。",
+     "用同样的 shop_id/address_id/items 重新 preview 拿最新价格 + 新的 preview_id/confirmation_token，"
+     "向用户确认新价后再 order。"),
+
+    (r"CONFIRMATION_REQUIRED|缺少用户确认令牌",
+     "CONFIRMATION_REQUIRED",
+     "缺确认令牌。",
+     "order 必须带 preview 返回的 --preview-id 和 --confirmation-token；缺了就先 preview 再 order。"),
+
+    (r"COUPON_UNAVAILABLE|COUPON_CONTEXT_EXPIRED|优惠券.*不可用|优惠券上下文",
+     "COUPON_ISSUE",
+     "优惠券不可用或已过期。",
+     "重新 preview（不带该券）拿当前可用券与价格；让用户重选或不用券后再 order。"),
+
+    (r"ORDER_FAILED|ORDER_CREATE_FAILED|ELEME_ERROR|Order render failed|Order creation failed|创建订单失败",
      "ORDER_GENERIC_FAIL",
      "订单创建/预览失败。",
      "menu --shop-id {shop_id} 重看商品状态（是否下架），逐项核对 item_id/sku_id 后重 preview。"
      "如多次失败，告诉用户换家或调整组合。"),
 
-    (r"IDEMPOTENCY_CONFLICT",
+    (r"IDEMPOTENCY_CONFLICT|CONFIRMATION_CONFLICT|确认令牌已被",
      "IDEMPOTENCY_CONFLICT",
      "下单参数与已用确认凭证不一致。",
      "confirmation_token 已被另一组参数消费。用同样的 shop_id/address_id/items 重新 preview 拿新的 "
@@ -803,7 +883,7 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
     # Match the EXPIRED *code* only — NOT a generic "expired" in the message:
     # CONSENT_GRANT_INVALID's message is "invalid or expired", which must route to
     # CONSENT_INVALID below (a never-bound user is "not bound", not "expired").
-    (r"CONSENT_GRANT_EXPIRED|授权.*过期",
+    (r"CONSENT_GRANT_EXPIRED|AUTH_EXPIRED|授权.*过期",
      "CONSENT_EXPIRED",
      "用户授权已过期。",
      "引导该用户重新授权：request_code --phone {phone} → verify_code（短信），"
@@ -820,10 +900,15 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "该手机号没有可绑定的淘宝闪购/饿了么账号。",
      "告诉用户：先用该手机号登录或开通淘宝闪购/饿了么后再绑定。换个已开通的手机号也行。"),
 
-    (r"CAP_NOT_BOUND|PROVIDER_NOT_AVAILABLE",
+    (r"CAP_NOT_BOUND|CAPABILITY_FORBIDDEN|PROVIDER_NOT_AVAILABLE",
      "CAP_NOT_BOUND",
      "该 agent 未开通外卖能力。",
      "这是平台侧配置：联系 ClawDot 平台为该 API_KEY 开通 delivery 能力后再用。不是用户能自助解决的。"),
+
+    (r"BINDING_LIMIT_REACHED",
+     "BINDING_LIMIT_REACHED",
+     "该 agent 已达可绑定用户数上限。",
+     "平台侧配额问题：先对某个已绑用户走解绑（或联系 ClawDot 提升 max_bindings 配额）再绑新用户。"),
 
     (r"还没绑定|USER_NOT_BOUND",
      "USER_NOT_BOUND_NEEDS_SMS",
@@ -874,6 +959,17 @@ def friendly_error(err: GatewayError, ctx: dict | None = None) -> str:
 
     Matches against both error.code and error.message so structured codes and
     upstream business messages both route to the playbook."""
+    # Doc v1.5 §12.3: error.next_action is the stable routing signal. A binding
+    # next_action means the user must (re)authorize — route there regardless of the
+    # code string (handles doc's AUTH_REQUIRED="用户未授权" vs deployment's
+    # AUTH_REQUIRED="api key missing"). The current deployment omits next_action,
+    # so this is forward-compat and a no-op against today's gateway.
+    if (err.next_action or "") in ("request_user_bind", "request_bind", "verify_user_bind"):
+        found = _lookup_by_code("USER_NOT_BOUND_NEEDS_SMS")
+        if found:
+            _c, user_msg, hint = found
+            return f"{user_msg}\nRECOVERY[USER_NOT_BOUND_NEEDS_SMS]: {_format_recovery(hint, ctx)}"
+
     if err.code in ("AUTH_REQUIRED", "AUTH_INVALID"):
         return "API_KEY 无效或缺失，请检查 .env 的 API_KEY 配置。"
 

@@ -45,12 +45,14 @@ metadata:
 
 ### 菜单钻取与下单 item 模型
 
-1. `menu` + `shop_id` → 分类概览（含 item_id/价格）
+1. `menu` + `shop_id` → 分类概览（含 item_id/价格；店铺有必选组时带 `required_groups`）
 2. `menu` + `shop_id` + `category` → 分类下所有商品
-3. `menu` + `shop_id` + `item_id` → 商品详情，含 `sku_options[]`（带 `sku_id`）、`ingredient_options[]`（带 `option_id` + `selected_by_default`）
+3. `menu` + `shop_id` + `item_id` → 商品详情，含 `sku_options[]`（带 `sku_id`）、`ingredient_options[]`（带 `option_id` + `selected_by_default`）；起购/库存受限时带 `min_purchase`（>1）、`available_quantity`（0=售罄）
 4. `menu` + `shop_id` + `shop_keyword` → 跨分类按菜名模糊搜
 
 下单 `items` 每项形如 `{"item_id":"item_x","quantity":1,"sku_id":"sku_y","ingredient_option_ids":["opt_z"],"remark":"少冰"}`：`sku_id` 取自该商品 `sku_options[].sku_id`（不传用默认），`ingredient_option_ids` 取自 `ingredient_options[].option_id`。所有 id 来自**当前店 menu 输出**，禁止跨店复用或把中文菜名当 item_id。
+
+**店铺必选组**：概览带 `required_groups[]` 时（麻辣烫「必选好汤」等），整单必须从每组 `candidates` 按 `min_select` 选够，当普通商品加进 `items[]`；漏选 preview 报 `MISSING_REQUIRED_SELECTION`。`min_purchase` 是单品起购份数（quantity 要够，否则 `BELOW_MIN_PURCHASE`，与整单起送价不同）。
 
 ### 下单两步交接
 

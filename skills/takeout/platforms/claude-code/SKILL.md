@@ -45,9 +45,9 @@ metadata:
 
 ### 菜单钻取与下单 item 模型
 
-1. `--shop-id shop_xxx` → 分类概览（各分类 + 热门商品 item_id/价格）
+1. `--shop-id shop_xxx` → 分类概览（各分类 + 热门商品 item_id/价格；店铺有必选组时带 `required_groups`）
 2. `--shop-id shop_xxx --category "热饮"` → 分类下所有商品
-3. `--shop-id shop_xxx --item-id item_xxx` → 商品详情，含 `sku_options[]`（规格，带 `sku_id`）、`ingredient_options[]`（加料/属性，带 `option_id` + `selected_by_default`）
+3. `--shop-id shop_xxx --item-id item_xxx` → 商品详情，含 `sku_options[]`（规格，带 `sku_id`）、`ingredient_options[]`（加料/属性，带 `option_id` + `selected_by_default`）；起购/库存受限时带 `min_purchase`（>1）、`available_quantity`（0=售罄）
 4. `--shop-id shop_xxx --shop-keyword "苕皮"` → 跨分类按菜名模糊搜
 
 下单 `--items` 为 JSON 数组，每项形如：
@@ -55,6 +55,8 @@ metadata:
 {"item_id":"item_xxx","quantity":1,"sku_id":"sku_xxx","ingredient_option_ids":["opt_xxx"],"remark":"少冰"}
 ```
 `sku_id` 从该商品 `sku_options[].sku_id` 取（不传用默认规格）；`ingredient_option_ids` 从 `ingredient_options[].option_id` 取。所有 id 都来自**当前店的 menu 输出**，禁止跨店复用、禁止把中文菜名当 item_id 传。
+
+**店铺必选组**：概览带 `required_groups[]` 时（麻辣烫「必选好汤」等），整单必须从每组 `candidates` 按 `min_select` 选够，当普通商品加进 `--items`；漏选 preview 报 `MISSING_REQUIRED_SELECTION`。`min_purchase` 是单品起购份数（quantity 要够，否则 `BELOW_MIN_PURCHASE`，与整单起送价不同）。
 
 ### 下单两步交接
 

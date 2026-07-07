@@ -380,6 +380,95 @@ def test_consent_error_mapping() -> None:
     check("consent.required_maps_invalid", "RECOVERY[CONSENT_INVALID]" in required, required)
 
 
+# ── doc v1.5 §13 error codes all map to a tailored RECOVERY (not generic) ─────
+
+def test_doc_v15_error_codes() -> None:
+    DOC = {
+        "AUTH_EXPIRED": "CONSENT_EXPIRED",
+        "CAPABILITY_FORBIDDEN": "CAP_NOT_BOUND",
+        "BINDING_LIMIT_REACHED": "BINDING_LIMIT_REACHED",
+        "ADDRESS_REQUIRED": "ADDR_MISSING",
+        "DETAIL_REQUIRED": "POI_DETAIL_REQUIRED",
+        "SUGGESTION_EXPIRED": "SUGGESTION_EXPIRED",
+        "PUBLIC_REFERENCE_INVALID": "REFERENCE_STALE",
+        "SHOP_UNAVAILABLE": "SHOP_CLOSED",
+        "ITEM_UNAVAILABLE": "ITEM_SOLD_OUT",
+        "MISSING_REQUIRED_SELECTION": "MISSING_REQUIRED_SELECTION",  # v1.6 店铺必选组
+        "BELOW_MIN_PURCHASE": "BELOW_MIN_PURCHASE",                  # v1.7 起购份数
+        "CART_CONTEXT_EXPIRED": "REFERENCE_STALE",
+        "COUPON_UNAVAILABLE": "COUPON_ISSUE",
+        "COUPON_CONTEXT_EXPIRED": "COUPON_ISSUE",
+        "PRICE_CHANGED": "PRICE_CHANGED",
+        "CONFIRMATION_REQUIRED": "CONFIRMATION_REQUIRED",
+        "CONFIRMATION_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "ORDER_CREATE_FAILED": "ORDER_GENERIC_FAIL",
+    }
+    for code, expect in DOC.items():
+        msg = takeout.friendly_error(takeout.GatewayError(400, code, f"{code} doc message"))
+        check(f"docerr.{code}",
+              f"RECOVERY[{expect}]" in msg and "请求失败" not in msg, msg)
+    # AUTH_REQUIRED carrying a binding next_action (doc semantics) → bind recovery
+    m = takeout.friendly_error(
+        takeout.GatewayError(401, "AUTH_REQUIRED", "用户未授权", "request_user_bind"))
+    check("docerr.auth_required_via_next_action",
+          "RECOVERY[USER_NOT_BOUND_NEEDS_SMS]" in m, m)
+    # AUTH_INVALID without binding next_action (deployment semantics) → api_key msg
+    m2 = takeout.friendly_error(takeout.GatewayError(401, "AUTH_INVALID", "API Key is invalid"))
+    check("docerr.auth_invalid_apikey", "API_KEY" in m2, m2)
+    # store-level required group must NOT collapse into item-internal MUST_PICK_REQUIRED,
+    # and 起购份数 must NOT collapse into 起送价 (both share loose CN tokens) — see playbook order.
+    mrs = takeout.friendly_error(takeout.GatewayError(400, "MISSING_REQUIRED_SELECTION", "缺少必选商品组"))
+    check("docerr.required_selection_distinct",
+          "RECOVERY[MISSING_REQUIRED_SELECTION]" in mrs and "MUST_PICK_REQUIRED" not in mrs, mrs)
+    bmp = takeout.friendly_error(takeout.GatewayError(400, "BELOW_MIN_PURCHASE", "低于起购下限"))
+    check("docerr.min_purchase_distinct",
+          "RECOVERY[BELOW_MIN_PURCHASE]" in bmp and "BELOW_MIN_ORDER" not in bmp, bmp)
+
+
+# ── v1.6-v1.8 menu fields surfaced (required_groups / min_purchase / available_quantity) ──
+
+def test_menu_v18_fields() -> None:
+    # build_item_detail surfaces min_purchase (>1) + available_quantity (incl. 0=sold out)
+    detail = takeout.build_item_detail({
+        "item_id": "item_1", "name": "经典草本骨汤", "price": 298,
+        "min_purchase": 2, "available_quantity": 5,
+    })
+    check("item.min_purchase", detail.get("min_purchase") == 2, str(detail))
+    check("item.min_purchase_hint", "min_purchase_hint" in detail, str(detail))
+    check("item.available_quantity", detail.get("available_quantity") == 5, str(detail))
+    sold_out = takeout.build_item_detail({"item_id": "i", "name": "x", "price": 1,
+                                          "available_quantity": 0})
+    check("item.available_quantity_zero", sold_out.get("available_quantity") == 0, str(sold_out))
+    # min_purchase==1 (no constraint) and null available_quantity are omitted (no noise)
+    d2 = takeout.build_item_detail({"item_id": "i", "name": "x", "price": 1,
+                                    "min_purchase": 1, "available_quantity": None})
+    check("item.min_purchase_omitted", "min_purchase" not in d2, str(d2))
+    check("item.available_quantity_omitted", "available_quantity" not in d2, str(d2))
+
+    # build_menu_overview surfaces store-level required_groups with candidates
+    menu = {
+        "shop": {"shop_id": "shop_1", "name": "麻辣烫", "available": True},
+        "categories": [], "items": [],
+        "required_groups": [{
+            "name": "必选好汤", "required": True, "min_select": 1,
+            "candidate_item_ids": ["item_a"],
+            "candidates": [{"item_id": "item_a", "name": "经典草本骨汤",
+                            "price": 298, "available": True}],
+        }],
+    }
+    ov = takeout.build_menu_overview(menu)
+    rg = ov.get("required_groups")
+    check("overview.required_groups",
+          isinstance(rg, list) and len(rg) == 1 and rg[0].get("name") == "必选好汤"
+          and rg[0].get("min_select") == 1
+          and (rg[0].get("candidates") or [{}])[0].get("item_id") == "item_a", str(ov))
+    check("overview.required_groups_hint", "required_groups_hint" in ov, str(ov))
+    # no required_groups → key absent (no empty noise), same in compact mode
+    ov2 = takeout.build_menu_overview({"shop": {"shop_id": "s"}, "categories": [], "items": []},
+                                      compact=True)
+    check("overview.no_required_groups_clean", "required_groups" not in ov2, str(ov2))
+
+
 def main() -> int:
     global _CFG
     _CFG = _cfg("cg_personal")
@@ -392,6 +481,8 @@ def main() -> int:
     test_env_writeback()
     test_gateway_url_normalization()
     test_consent_error_mapping()
+    test_doc_v15_error_codes()
+    test_menu_v18_fields()
 
     print(f"PASS {len(_RESULTS)} checks")
     if _FAILS:
