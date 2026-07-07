@@ -94,6 +94,23 @@
 - **delete_address（§7.4）/ get_user_auth_status / get_homepage_url / sign / coupons**：文档有、本 skill
   未接 action（D7 同口径，保持与旧 skill 功能等价，不主动引入）。客户端按需可补。
 
+### D10. 对照官方《API接口说明文档 v1.8》增量核对（2026-07-08）
+- v1.5→v1.8 增量（v1.6 `required_groups`＋`categories[].items` 卡片四要素＋`external_user_id`；
+  v1.7 `get_item_options`＋`min_purchase`；v1.8 `available_quantity`＋`quote_cart.blocking_code`）。
+  auth 头 / 所有 path / items 模型 / 下单交接 **v1.8 未改**，接口契约面仍与 D9 一致。
+- **纳入（落在既有下单主链路 menu→preview→order，不纳入会让既有流程报错/信息缺失）**：
+  - **`required_groups[]`（店铺级必选组，v1.6）**：`build_menu_overview` 透出（name/min_select/candidates）＋提示；
+    错误码 `MISSING_REQUIRED_SELECTION` → 定向 RECOVERY，**置于 `MUST_PICK_REQUIRED` 之前**（后者 `必选`
+    过宽会吞它，靠 code 精确命中）。否则麻辣烫/套餐店整单在 preview 报 400 且无恢复指引。
+  - **`min_purchase`（起购份数，v1.7）**：`build_item_detail` 透出（>1 时）＋提示；错误码 `BELOW_MIN_PURCHASE`
+    → 定向 RECOVERY，**置于 `BELOW_MIN_ORDER`（起送价）之前**，二者语义不同不得串味。
+  - **`available_quantity`（库存余量，v1.8）**：`build_item_detail` 透出（0=售罄/正整数=余量/null 省略）。
+- **不纳入（新增可选能力，D7 同口径：不主动引入、保功能等价）**：`get_item_options`（菜单已内联全量
+  sku/加料且本 skill 缓存全量菜单，冗余）、`external_user_id`（本 skill 一 cg 一手机号模型无需联登标识）、
+  `quote_cart`＋`blocking_code`（本 skill 不接 quote，preview 自带算价）、
+  `delete_address`/`homepage_url`/`sign`/`revoke`/`share_url`（D7 既有）。
+- 其余 v1.8 新增回显字段（`categories` 卡片四要素、items `specs`/`selected_ingredients` 等）整段透传照常带上。
+
 ## 验收标准（可证伪）
 
 ### 机器可判定（写入 verify.sh 硬 gate，绿才算 done）
@@ -118,6 +135,10 @@
   `SHOP_UNAVAILABLE`/`ITEM_UNAVAILABLE`/`CART_CONTEXT_EXPIRED`/`CONFIRMATION_CONFLICT`/`ORDER_CREATE_FAILED`/
   `PRICE_CHANGED`/`CONFIRMATION_REQUIRED`/`AUTH_EXPIRED`/`BINDING_LIMIT_REACHED`）映射到定向 RECOVERY（非通用兜底）；
   `AUTH_REQUIRED` 带 `next_action=request_user_bind` 走绑定恢复、否则走 api_key 提示。
+- **G8 v1.8 增量单测**（D10）：`build_menu_overview` 透出 `required_groups`（含 candidates）、
+  `build_item_detail` 透出 `min_purchase`(>1)/`available_quantity`（含 0；min_purchase=1/null 省略不产噪音）；
+  `MISSING_REQUIRED_SELECTION`、`BELOW_MIN_PURCHASE` 各映射到定向 RECOVERY，且**不与** `MUST_PICK_REQUIRED`
+  / `BELOW_MIN_ORDER` 串味（对抗断言）。
 
 ### 人核（无法自动：需真实 API_KEY + 线上 open-gateway + 真实用户授权 cg，成本=真实下单花钱+真人验证码）
 - H1：端到端真跑一单（search→menu→preview→order→order_status）拿到真实付款链接。

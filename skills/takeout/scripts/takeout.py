@@ -590,6 +590,29 @@ def _item_overview(item: dict) -> dict:
     }
 
 
+def _trim_required_groups(menu: dict) -> list[dict]:
+    """Store-level required item groups (doc v1.6, e.g. 麻辣烫「必选好汤」): the whole
+    order must include ≥min_select from each group's candidates, else preview_order
+    rejects with MISSING_REQUIRED_SELECTION (HTTP 400). Surface them up front so the
+    agent lets the user pick a candidate instead of dead-ending at preview. Distinct
+    from an item-internal required option group (那走 MUST_PICK_REQUIRED)."""
+    groups: list[dict] = []
+    for g in menu.get("required_groups", []) or []:
+        if not isinstance(g, dict):
+            continue
+        candidates = [
+            {"item_id": c.get("item_id"), "name": c.get("name"),
+             "price": c.get("price"), "available": c.get("available", True)}
+            for c in (g.get("candidates") or []) if isinstance(c, dict)
+        ]
+        groups.append({
+            "name": g.get("name"),
+            "min_select": g.get("min_select", 1),
+            "candidates": candidates,
+        })
+    return groups
+
+
 def build_menu_overview(menu: dict, compact: bool = False) -> dict:
     """Build a category overview from an open-gateway shop menu response.
 
@@ -618,13 +641,21 @@ def build_menu_overview(menu: dict, compact: bool = False) -> dict:
     if compact:
         categories = categories[:5]
 
-    return {
+    result: dict = {
         "shop_id": shop.get("shop_id"),
         "shop_name": shop.get("name", ""),
         "available": shop.get("available", True),
         "categories": categories,
         "total_items": menu.get("total_items"),
     }
+    required_groups = _trim_required_groups(menu)
+    if required_groups:
+        result["required_groups"] = required_groups
+        result["required_groups_hint"] = (
+            "这家店有店铺级必选组：整单必须从每组 candidates 里按 min_select 选够商品，"
+            "作为普通商品加进下单 items[]（可连同规格/加料一起）。列给用户选，别替用户做主。"
+        )
+    return result
 
 
 def build_category_detail(menu: dict, category: str) -> dict | None:
@@ -673,6 +704,18 @@ def build_item_detail(item: dict) -> dict:
         "category_name": item.get("category_name"),
         "description": item.get("description"),
     }
+    # min_purchase (doc v1.7): 起购份数，≥1（1=无约束）。>1 时下单 quantity 必须达标，
+    # 否则 preview 报 BELOW_MIN_PURCHASE——提前透出让 agent 把量提够。
+    min_purchase = item.get("min_purchase")
+    if isinstance(min_purchase, int) and min_purchase > 1:
+        detail["min_purchase"] = min_purchase
+        detail["min_purchase_hint"] = (
+            f"起购 {min_purchase} 份：下单 quantity 必须 ≥ {min_purchase}，否则 preview 报 BELOW_MIN_PURCHASE。"
+        )
+    # available_quantity (doc v1.8): 库存余量（份）。0=售罄、正整数=剩余可购、null=充足或未知。
+    aq = item.get("available_quantity")
+    if aq is not None:
+        detail["available_quantity"] = aq
     sku_options = item.get("sku_options") or []
     if sku_options:
         detail["sku_options"] = sku_options
@@ -726,6 +769,16 @@ def normalize_address_search(raw: dict) -> dict:
 # upstream business messages (起送/打烊/售罄) route to the same playbook.
 
 ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
+    # 店铺级必选组（doc v1.6）：整单必须再点一个商品（如麻辣烫「必选好汤」）。
+    # 放在 MUST_PICK_REQUIRED 之前——它的 `必选` 太宽会先吞掉这条；靠 code 精确命中。
+    (r"MISSING_REQUIRED_SELECTION|必选商品组|必选组.*未选|缺.*必选组",
+     "MISSING_REQUIRED_SELECTION",
+     "店铺必选商品组未选满。",
+     "这家店整单必须从某个必选组选够（如麻辣烫「必选好汤」，跟商品内部的加料必选组是两回事）。"
+     "menu --shop-id {shop_id} 看返回的 required_groups[]，从每组 candidates 里按 min_select 选够商品，"
+     "作为普通商品加进 items[] 再 preview。让用户选具体哪个，禁止替用户做主。"),
+
+    # 商品内部必选做法组（如必选温度/糖度）：某商品自己内部必须选够 option。
     (r"店铺必须商品未点|必选商品未点|必须先购买|必选",
      "MUST_PICK_REQUIRED",
      "店铺要求必选项未点。",
@@ -775,6 +828,13 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
      "店铺不送当前地址。",
      "保留地址，recommend --shop-keyword '<同品类>' --lat --lng --top-n 4 推荐其他店；"
      "或告诉用户'这家不送你这边，换家行不'。禁止换地址重试，禁止用同 shop_id 重 preview。"),
+
+    # 单品起购份数不足（doc v1.7）——与「整单未达起送价」是两码事，放前面精确命中。
+    (r"BELOW_MIN_PURCHASE|低于起购|起购份数|起购下限",
+     "BELOW_MIN_PURCHASE",
+     "商品数量低于起购份数。",
+     "该商品有起购份数要求（menu 商品详情里的 min_purchase）。把对应商品的 quantity 提到 min_purchase 及以上重 preview；"
+     "或让用户换个无起购限制的商品。加量/加钱先跟用户说一声。"),
 
     (r"min order|minimum|未达起送价|起送",
      "BELOW_MIN_ORDER",

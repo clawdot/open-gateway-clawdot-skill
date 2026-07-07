@@ -4,7 +4,7 @@ description: >
   通过 ClawDot open-gateway 外卖网关帮用户点外卖。
   支持搜店、选菜、下单、查单全流程；鉴权两选一：
   personal（CONSENT_GRANT_ID）/ 用户绑定（短信验证码默认，可选 H5 链接授权，拿到用户 consent_grant）。
-version: 1.0.0
+version: 1.1.0
 license: MIT
 author: clawdot
 
@@ -53,7 +53,7 @@ actions:
   - name: recommend
     description: 搜店 + 并行取 top N 家菜单一步到位
   - name: menu
-    description: 菜单钻取（概览→分类→商品详情；--shop-keyword 跨分类搜菜；商品详情含 sku_options / ingredient_options）
+    description: 菜单钻取（概览→分类→商品详情；--shop-keyword 跨分类搜菜；商品详情含 sku_options / ingredient_options / min_purchase / available_quantity；概览含店铺必选组 required_groups）
   - name: preview
     description: 预览订单（价格、配送费、优惠），返回 preview_id + confirmation_token
   - name: order

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.1.0] - 2026-07-08 — 对齐 API 文档 v1.8（菜单增量字段）
+
+对照官方《API接口说明文档 v1.8》做增量对齐——只补**落在既有下单主链路（menu→preview→order）**、
+不补会让既有流程报错或缺信息的三处。接口契约面（auth 头 / path / items 模型 / 下单交接）v1.8 未改，
+仍与 [1.0.0] 一致。详见仓库根 `DECISIONS.md` D10 / G8。
+
+### Added
+
+- **店铺级必选组 `required_groups`（文档 v1.6）**：`menu` 概览透出 `required_groups[]`
+  （`name` / `min_select` / `candidates`）+ 提示。麻辣烫「必选好汤」等店，整单须从每组候选选够才能下单；
+  漏选时新错误码 `MISSING_REQUIRED_SELECTION` → 定向 `RECOVERY[MISSING_REQUIRED_SELECTION]`
+  （与**商品内部**加料必选组 `MUST_PICK_REQUIRED` 明确区分，playbook 顺序保证不串味）。
+- **单品起购份数 `min_purchase`（文档 v1.7）**：`menu --item-id` 商品详情透出（>1 时）+ 提示；
+  新错误码 `BELOW_MIN_PURCHASE` → 定向 `RECOVERY[BELOW_MIN_PURCHASE]`（与整单「未达起送价」`BELOW_MIN_ORDER` 区分）。
+- **库存余量 `available_quantity`（文档 v1.8）**：商品详情透出（0=售罄 / 正整数=余量 / null 省略）。
+
+### 未纳入（新增可选能力，保持与旧 skill 功能等价、不主动引入）
+
+- `get_item_options`（菜单已内联全量 sku/加料、且本 skill 缓存全量菜单，冗余）、`external_user_id`
+  （本 skill 一 cg 一手机号，无需联登标识）、`quote_cart` + `blocking_code`（不接 quote，preview 自带算价）。
+
 ## [1.0.0] - 2026-06-30 — 迁移到 open-gateway
 
 把 skill 从旧 **clawdot-gateway**（user_token 体系）整体迁到 **open-gateway**（consent_grant / public v1
