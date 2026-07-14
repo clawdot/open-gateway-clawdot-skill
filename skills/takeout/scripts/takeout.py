@@ -536,10 +536,10 @@ def resolve_consent_grant(phone: str | None, cache: Cache,
         return cg
 
     die_with_hint(
-        f"用户 {norm} 还没绑定。先问用户选哪种授权方式：短信验证码（默认）或打开链接授权（H5）；"
+        f"用户 {mask_phone(norm)} 还没绑定。先问用户选哪种授权方式：短信验证码（默认）或打开链接授权（H5）；"
         f"用户不选就走短信。",
         "USER_NOT_BOUND_NEEDS_SMS",
-        ctx={"phone": norm},
+        # 不把裸手机号塞进 ctx：RECOVERY 命令用 <11位手机号> 占位，agent 持真号自行替换
     )
     return ""  # unreachable (die_with_hint exits)
 
@@ -734,12 +734,66 @@ def build_item_detail(item: dict) -> dict:
 
 
 def normalize_saved_address(a: dict) -> dict:
-    """Coerce lat/lng to float (gateway may return strings/null)."""
+    """Coerce lat/lng to float (gateway may return strings/null). This is the FULL
+    record used for the internal cache (coords power search/nearest); the agent-facing
+    copy is masked separately via mask_saved_address."""
     out = dict(a)
     lat, lng = a.get("lat"), a.get("lng")
     out["lat"] = float(lat) if lat is not None else None
     out["lng"] = float(lng) if lng is not None else None
     return out
+
+
+def _mask_name(name: str | None) -> str | None:
+    """留姓脱名：王小明 → 王**。非中文/单字原样。"""
+    if not isinstance(name, str):
+        return name
+    n = name.strip()
+    return (n[0] + "*" * (len(n) - 1)) if len(n) >= 2 else n
+
+
+def mask_saved_address(a: dict) -> dict:
+    """Heavy PII mask for agent-facing output (aligned policy): keep address_id +
+    街道级 display_name + city/tag + 网关已脱敏的 contact_phone_masked，DROP 精确门牌
+    (address_detail)、精确坐标 (lat/lng)、收件人全名（只留姓）。下单靠 address_id，不受影响；
+    坐标只留在内部缓存供 search/nearest 用。"""
+    out: dict = {
+        "address_id": a.get("address_id"),
+        "display_name": a.get("display_name"),
+        "city": a.get("city"),
+        "tag": a.get("tag"),
+    }
+    if a.get("contact_name") is not None:
+        out["contact_name"] = _mask_name(a.get("contact_name"))
+    if a.get("contact_phone_masked") is not None:
+        out["contact_phone_masked"] = a.get("contact_phone_masked")
+    if a.get("distance_meters") is not None:
+        out["distance_meters"] = a.get("distance_meters")
+    return out
+
+
+def mask_address_search(trimmed: dict) -> dict:
+    """Mask a normalize_address_search result for output: heavy-mask saved[], strip
+    coords from suggestions[]（agent 用 sug_ref 选址，从不需要裸 lat/lng）。"""
+    saved = [mask_saved_address(a) for a in trimmed.get("saved", [])]
+    suggestions = [{k: v for k, v in s.items() if k not in ("lat", "lng")}
+                   for s in trimmed.get("suggestions", [])]
+    out: dict = {"saved": saved, "suggestions": suggestions}
+    if trimmed.get("nearest_address_id") is not None:
+        out["nearest_address_id"] = trimmed["nearest_address_id"]
+    return out
+
+
+def mask_preview_pii(result: dict) -> dict:
+    """Drop the precise 门牌 from a preview's echoed address (heavy mask); keep
+    display_name/city so the agent can still coarsely confirm the destination."""
+    if not isinstance(result, dict):
+        return result
+    addr = result.get("address")
+    if isinstance(addr, dict) and "address_detail" in addr:
+        result = dict(result)
+        result["address"] = {k: v for k, v in addr.items() if k != "address_detail"}
+    return result
 
 
 def normalize_address_search(raw: dict) -> dict:
@@ -1004,6 +1058,11 @@ SEARCH_TTL = 5 * 60       # 5 minutes
 MENU_TTL = 10 * 60        # 10 minutes
 ADDRESS_TTL = 30 * 60     # 30 minutes
 CART_TTL = 25 * 60        # 25 minutes (under the gateway cart TTL of 30 min)
+# recommend 只渲染 compact 概览（每店 ≤5 类×2 品），拉一批就够——大菜单实测可达 ~189 品，
+# 全量 ×N 家浪费带宽/缓存。limit 会截断 items[] 与 categories[]（实测 30→4 类），但 total_items、
+# required_groups 仍是全量；50 够填满 compact 的 5 类视图、约为大菜单 1/4 体积。仅 recommend 用；
+# menu 单店钻取仍走全量（见 action_menu）。
+RECOMMEND_MENU_LIMIT = 50
 
 
 def _addr_cache_key(phone: str | None) -> str:
@@ -1016,6 +1075,12 @@ def _cart_cache_key(shop_id: str) -> str:
 
 def _menu_cache_key(cart_id: str) -> str:
     return f"menu:{cart_id}"
+
+
+def _menu_lite_cache_key(cart_id: str) -> str:
+    # recommend 的 limit 版菜单单独存——绝不能落到 menu:{cart_id}（menu 钻取的全量键），
+    # 否则用户从 recommend 选店后 menu --shop-id 命中被截断的菜单、钻取丢商品。
+    return f"menu_lite:{cart_id}"
 
 
 def remember_carts(cache: Cache, shops: list[dict]) -> None:
@@ -1107,12 +1172,13 @@ def action_recommend(args, gw: GatewayClient, cache: Cache, config: Config,
         sid, cid = shop.get("shop_id"), shop.get("cart_id")
         if not sid or not cid:
             return {"shop_id": sid, "shop_name": shop.get("name"), "error": "缺少购物车上下文"}
-        menu_key = _menu_cache_key(cid)
-        menu = cache.get(menu_key)
+        # 分开拉：recommend 只拉一批（limit），存独立 lite 键；menu 单店钻取才全量。
+        lite_key = _menu_lite_cache_key(cid)
+        menu = cache.get(lite_key)
         if not menu:
             try:
-                menu = gw.get_shop_menu(cg, shop_id=sid, cart_id=cid)
-                cache.set(menu_key, menu, MENU_TTL)
+                menu = gw.get_shop_menu(cg, shop_id=sid, cart_id=cid, limit=RECOMMEND_MENU_LIMIT)
+                cache.set(lite_key, menu, MENU_TTL)
             except GatewayError:
                 return {"shop_id": sid, "shop_name": shop.get("name"), "error": "菜单获取失败"}
         overview = build_menu_overview(menu, compact=True)
@@ -1208,8 +1274,8 @@ def action_addresses(args, gw: GatewayClient, cache: Cache, config: Config,
         existing = existing if isinstance(existing, list) else []
         existing = [a for a in existing if a.get("address_id") != new_addr.get("address_id")]
         existing.insert(0, new_addr)
-        cache.set(addr_key, existing, ADDRESS_TTL)
-        output(new_addr)
+        cache.set(addr_key, existing, ADDRESS_TTL)   # cache full (coords power search)
+        output(mask_saved_address(new_addr))         # emit heavy-masked copy
         return
 
     # ── Branch 2: Search (by keyword and/or coords/city) ──
@@ -1226,7 +1292,7 @@ def action_addresses(args, gw: GatewayClient, cache: Cache, config: Config,
             return
         trimmed = normalize_address_search(raw)
         _refresh_saved_cache(cache, phone, trimmed["saved"])
-        output(trimmed)
+        output(mask_address_search(trimmed))
         return
 
     # ── Branch 3: Default — list saved + suggestions ──
@@ -1245,7 +1311,7 @@ def action_addresses(args, gw: GatewayClient, cache: Cache, config: Config,
             "ADDR_MISSING",
         )
     _refresh_saved_cache(cache, phone, trimmed["saved"])
-    output(trimmed)
+    output(mask_address_search(trimmed))
 
 
 def _parse_items(raw_items: str) -> list[dict]:
@@ -1297,7 +1363,7 @@ def action_preview(args, gw: GatewayClient, cache: Cache, config: Config,
     except GatewayError as e:
         die(friendly_error(e, {"shop_id": args.shop_id, "address_id": args.address_id}))
         return
-    output(result)
+    output(mask_preview_pii(result))
 
 
 def action_order(args, gw: GatewayClient, cache: Cache, config: Config,
@@ -1343,7 +1409,7 @@ def action_request_code(args, gw: GatewayClient, cache: Cache, config: Config) -
         try:
             result = gw.request_bind(phone, auth_type="h5")
         except GatewayError as e:
-            die(f"获取授权链接失败：{friendly_error(e, {'phone': phone})}")
+            die(f"获取授权链接失败：{friendly_error(e)}")
             return
         request_id = result.get("request_id")
         h5_url = result.get("h5_url")
@@ -1353,12 +1419,11 @@ def action_request_code(args, gw: GatewayClient, cache: Cache, config: Config) -
             "auth_type": "h5",
             "request_id": request_id,
             "h5_url": h5_url,
-            "phone": phone,
             "phone_masked": result.get("masked_phone") or masked,
             "expires_in": result.get("expires_in", 300),
             "next_step": (
-                f"把 h5_url 原样发给用户，让他点开完成授权。用户说授权完成后调用："
-                f"verify_code --auth-type h5 --phone {phone} --request-id {request_id}"
+                f"把 h5_url 原样发给用户，让他点开完成授权。用户说授权完成后调用（--phone 填该用户手机号）："
+                f"verify_code --auth-type h5 --phone <手机号> --request-id {request_id}"
             ),
         })
         return
@@ -1366,7 +1431,7 @@ def action_request_code(args, gw: GatewayClient, cache: Cache, config: Config) -
     try:
         result = gw.request_bind(phone, auth_type="sms")
     except GatewayError as e:
-        die(f"发送验证码失败：{friendly_error(e, {'phone': phone})}")
+        die(f"发送验证码失败：{friendly_error(e)}")
         return
     bind_id = result.get("bind_id")
     if not bind_id:
@@ -1374,11 +1439,10 @@ def action_request_code(args, gw: GatewayClient, cache: Cache, config: Config) -
     output({
         "auth_type": "sms",
         "bind_id": bind_id,
-        "phone": phone,
         "phone_masked": result.get("masked_phone") or masked,
         "next_step": (
-            f"已发短信到 {masked}，请告诉用户回复 6 位验证码。用户回复后调用："
-            f"verify_code --phone {phone} --bind-id {bind_id} --code <用户输的6位>"
+            f"已发短信到 {masked}，请告诉用户回复 6 位验证码。用户回复后调用（--phone 填该用户手机号）："
+            f"verify_code --phone <手机号> --bind-id {bind_id} --code <用户输的6位>"
         ),
     })
 
@@ -1395,13 +1459,13 @@ def action_verify_code(args, gw: GatewayClient, cache: Cache, config: Config) ->
         try:
             result = gw.verify_bind(auth_type="h5", request_id=args.request_id)
         except GatewayError as e:
-            die(f"查询授权结果失败：{friendly_error(e, {'phone': phone})}")
+            die(f"查询授权结果失败：{friendly_error(e)}")
             return
         if not result.get("bound"):
             status = result.get("status") or "pending"
             if status == "expired":
                 die("授权链接已过期。\n"
-                    f"RECOVERY[H5_BIND_EXPIRED]: 重新调 request_code --auth-type h5 --phone {phone} 拿新链接发给用户。")
+                    "RECOVERY[H5_BIND_EXPIRED]: 重新调 request_code --auth-type h5 --phone <手机号> 拿新链接发给用户。")
             die("用户还没完成授权。\n"
                 "RECOVERY[H5_BIND_PENDING]: 提醒用户点开刚才的链接完成授权；等用户说完成后用同一个 request_id 重调本命令。不要高频轮询。")
     else:
@@ -1412,7 +1476,7 @@ def action_verify_code(args, gw: GatewayClient, cache: Cache, config: Config) ->
         try:
             result = gw.verify_bind(auth_type="sms", bind_id=args.bind_id, code=args.code)
         except GatewayError as e:
-            die(f"验证失败：{friendly_error(e, {'phone': phone})}")
+            die(f"验证失败：{friendly_error(e)}")
             return
 
     cg = result.get("consent_grant_id")
@@ -1432,7 +1496,7 @@ def action_verify_code(args, gw: GatewayClient, cache: Cache, config: Config) ->
         "consent_grant_id": cg,
         "expires_at": result.get("expires_at"),
         "scopes": result.get("scopes"),
-        "phone": phone,
+        "phone_masked": mask_phone(phone),
         "persisted_to_env": persisted,
         "message": (
             ("绑定成功，consent_grant_id 已写入 .env 作为默认用户。后续业务调用直接进行即可，无需 --phone。"

@@ -48,6 +48,9 @@ redline 'os\.environ\.get\("(ADMIN_SECRET|USER_TOKEN)"' 'ADMIN_SECRET/USER_TOKEN
 redline '/api/v1/user/bind/' 'legacy /user/bind/ path'
 redline 'def trusted_bind|\.trusted_bind\(' 'trusted_bind method'
 redline 'session_id|session-id' 'session_id order handoff'
+# raw phone as an emitted JSON field (own line, comma-terminated) — NOT the request
+# body {"phone": phone, "auth_type": ...} which legitimately must send it to the gateway.
+redline '"phone": phone,$' 'raw phone in output() (must emit phone_masked)'
 
 # Positive: the new auth surface must be present
 step "G4b new-surface presence"

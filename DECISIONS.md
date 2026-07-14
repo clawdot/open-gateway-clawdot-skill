@@ -111,6 +111,26 @@
   `delete_address`/`homepage_url`/`sign`/`revoke`/`share_url`（D7 既有）。
 - 其余 v1.8 新增回显字段（`categories` 卡片四要素、items `specs`/`selected_ingredients` 等）整段透传照常带上。
 
+### D11. recommend 菜单「分开拉」——bounded fetch + 独立缓存（2026-07-14）
+- recommend 的 `_fetch_menu` 传 `limit=RECOMMEND_MENU_LIMIT`(50)，只拉 compact 概览所需一批（大菜单实测 ~189 品，
+  全量×N 家浪费上游/缓存；limit 截断 items[]/categories[]，但 `total_items`/`required_groups` 仍全量）。
+- **红线（碰现有行为）**：limit 版菜单缓存到**独立键** `menu_lite:{cart_id}`，**不得落到** `menu` 钻取用的
+  全量 `menu:{cart_id}`——否则用户从 recommend 选店后 `menu --shop-id` 命中被截断菜单、钻取丢商品。
+  `menu`（单店钻取）仍全量、无 `limit`。
+- 实测（OpenClaw 部署 + live cg）：recommend 3 店 compact 正常、`menu:` 键为空、随后 `menu --shop-id` 真全量(15 类/179)。
+
+### D12. 手机号 + 地址输出脱敏（重度）（2026-07-14）
+- 触发：用户要求"手机号和地址需要脱敏"；盘问对齐**地址取重度**、手机号统一脱敏。补上 D8 记的
+  「stderr/recovery 文案含未脱敏手机号」遗留项。
+- **手机号**：所有 output/RECOVERY/next_step 里裸号 → `mask_phone` 或 `<手机号>`/`<11位手机号>` 占位
+  （agent 持真号自行替换调用）；`request_code`/`verify_code` 去掉裸 `phone` 字段、只留 `phone_masked`。
+  内部缓存键 `cg:{phone}`/`addr:{phone}`、发网关的请求体 `{"phone":...}` 保留裸号（本地 0600 / 出站必需，非 agent 输出）。
+- **地址（重度）**：agent 输出去掉 `address_detail`(门牌)、`lat/lng`，`contact_name` 留姓（王**）；保留
+  `address_id`+街道级 `display_name`+city/tag+网关已脱敏 `contact_phone_masked`。`preview` 回显去掉 `address_detail`。
+- **红线（碰现有行为）**：**内部缓存保留全量**（坐标供 search/nearest 解析），只脱**输出**副本；下单靠 `address_id` 不受影响。
+  输出无 11 位裸号、无门牌、无精确坐标。
+- 遗留（未做、超本次范围）：`verify_code` 仍在 stdout 明文回显 `consent_grant_id`（bearer 凭证）——比手机号更该脱，另议。
+
 ## 验收标准（可证伪）
 
 ### 机器可判定（写入 verify.sh 硬 gate，绿才算 done）
@@ -139,6 +159,11 @@
   `build_item_detail` 透出 `min_purchase`(>1)/`available_quantity`（含 0；min_purchase=1/null 省略不产噪音）；
   `MISSING_REQUIRED_SELECTION`、`BELOW_MIN_PURCHASE` 各映射到定向 RECOVERY，且**不与** `MUST_PICK_REQUIRED`
   / `BELOW_MIN_ORDER` 串味（对抗断言）。
+- **G9 recommend bounded 单测**（D11）：recommend 出站 menu 请求带 `limit`、落 `menu_lite:` 键、**不写** `menu:`
+  全量键；`menu`（单店）出站**无** `limit`（对抗断言，防串味）。
+- **G10 PII 脱敏单测 + 红线**（D12）：`mask_saved_address` 去 `address_detail`/`lat`/`lng`、`contact_name` 留姓；
+  `mask_address_search` suggestions 去坐标；`addresses` 输出无门牌/坐标**但内部缓存仍有坐标**（脱敏不破坏 search 坐标解析）；
+  `request_code`/`verify_code` 输出无裸 `phone` 字段、无 11 位连号；verify.sh 红线 `"phone": phone,$`。
 
 ### 人核（无法自动：需真实 API_KEY + 线上 open-gateway + 真实用户授权 cg，成本=真实下单花钱+真人验证码）
 - H1：端到端真跑一单（search→menu→preview→order→order_status）拿到真实付款链接。
