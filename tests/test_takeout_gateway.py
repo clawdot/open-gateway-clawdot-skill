@@ -228,6 +228,8 @@ def test_flow_threading() -> None:
                             gw, cache, _CFG, "cg_flow", None)
         check("flow.menu_uses_cart", last_call()["body"].get("cart_id") == "cart_1",
               str(last_call()["body"]))
+        # menu (single-shop drill-down) must stay FULL — no limit (recommend is the bounded one)
+        check("flow.menu_full_no_limit", "limit" not in last_call()["body"], str(last_call()["body"]))
 
         # 3. preview threads cart_1 + items (new {item_id, sku_id, quantity} shape)
         set_response({"preview_id": "prv_9", "confirmation_token": "cf_9",
@@ -469,6 +471,98 @@ def test_menu_v18_fields() -> None:
     check("overview.no_required_groups_clean", "required_groups" not in ov2, str(ov2))
 
 
+# ── recommend bounded fetch: passes limit + separate lite cache (no full-menu pollution) ──
+
+def test_recommend_menu_limit() -> None:
+    cache = fresh_cache()
+    gw = takeout.GatewayClient(_CFG)
+    captured: list = []
+    orig_output = takeout.output
+    takeout.output = lambda data: captured.append(data)
+    try:
+        set_response({"shops": [{"shop_id": "shop_1", "cart_id": "cart_1", "name": "麻辣烫"}]})
+        takeout.action_recommend(
+            parse(["--action", "recommend", "--shop-keyword", "麻辣烫",
+                   "--lat", "30.2", "--lng", "120.0", "--top-n", "1"]),
+            gw, cache, _CFG, "cg_rec", None)
+        menu_calls = [c for c in _CALLS if c["path"] == "/api/v1/shops/menu"]
+        check("recommend.menu_called", len(menu_calls) >= 1, str(len(menu_calls)))
+        body = menu_calls[-1]["body"] if menu_calls else {}
+        check("recommend.menu_has_limit",
+              body.get("limit") == takeout.RECOMMEND_MENU_LIMIT, str(body))
+        # bounded menu lands in the lite cache; the full-menu cache (menu:) stays clean so a
+        # follow-up `menu --shop-id` still full-fetches for drill-down (no truncated reuse).
+        check("recommend.lite_cache_set", cache.get("menu_lite:cart_1") is not None)
+        check("recommend.full_cache_clean", cache.get("menu:cart_1") is None)
+    finally:
+        takeout.output = orig_output
+
+
+# ── PII masking: phone + address heavy-masked in output, internal cache stays full ──
+
+def test_pii_masking() -> None:
+    import re
+    full = {"address_id": "addr_1", "display_name": "杭州西溪印象城A座",
+            "address_detail": "3号楼621室", "city": "杭州", "tag": "家",
+            "contact_name": "王小明", "contact_phone_masked": "188****2920",
+            "lat": 30.27, "lng": 120.03}
+    m = takeout.mask_saved_address(full)
+    check("mask.drops_detail", "address_detail" not in m, str(m))
+    check("mask.drops_coords", "lat" not in m and "lng" not in m, str(m))
+    check("mask.name_surname", m.get("contact_name") == "王**", str(m))
+    check("mask.keeps_id_display", m.get("address_id") == "addr_1" and bool(m.get("display_name")), str(m))
+    check("mask.keeps_gw_masked_phone", m.get("contact_phone_masked") == "188****2920", str(m))
+
+    ms = takeout.mask_address_search({"saved": [full], "suggestions": [
+        {"sug_ref": "s1", "display_name": "X", "address": "Y", "lat": 1.0, "lng": 2.0}]})
+    check("mask.sugg_drops_coords",
+          all("lat" not in s and "lng" not in s for s in ms["suggestions"]), str(ms["suggestions"]))
+
+    mp = takeout.mask_preview_pii(
+        {"preview_id": "p", "address": {"display_name": "D", "address_detail": "621室", "city": "杭州"}})
+    check("mask.preview_drops_detail",
+          "address_detail" not in mp["address"] and mp["address"]["display_name"] == "D", str(mp))
+
+    # functional: addresses OUTPUT is masked, but the internal cache keeps full coords
+    # so search/nearest coord-resolution still works (masking must not break the flow).
+    cache = fresh_cache()
+    gw = takeout.GatewayClient(_CFG)
+    captured: list = []
+    orig = takeout.output
+    takeout.output = lambda d: captured.append(d)
+    try:
+        set_response({"saved_addresses": [full], "suggestions": []})
+        takeout.action_addresses(parse(["--action", "addresses"]), gw, cache, _CFG, "cg_a", None)
+        blob = json.dumps(captured[-1], ensure_ascii=False)
+        check("addr.output_no_detail", "3号楼621室" not in blob, blob)
+        check("addr.output_no_coords", '"lat"' not in blob and '"lng"' not in blob, blob)
+        clat, clng = takeout.get_cached_address_coords(cache, None)
+        check("addr.cache_keeps_coords", clat == 30.27 and clng == 120.03, f"{clat},{clng}")
+
+        # request_code output: no raw phone field, phone_masked present, no 11-digit run anywhere
+        set_response({"bind_id": "b1", "expires_in": 300, "masked_phone": "188****2920"})
+        takeout.action_request_code(
+            parse(["--action", "request_code", "--phone", "18800001234"]), gw, cache, _CFG)
+        rc = captured[-1]
+        check("rc.no_raw_phone_field", "phone" not in rc, str(rc))
+        check("rc.has_masked", bool(rc.get("phone_masked")), str(rc))
+        check("rc.no_11digit", not re.search(r"\d{11}", json.dumps(rc, ensure_ascii=False)), str(rc))
+
+        # verify_code output: no raw phone field / no 11-digit run
+        d = Path(tempfile.mkdtemp()); env_path = d / ".env"; env_path.write_text("API_KEY=K\n")
+        vcfg = _cfg("", env_path)
+        set_response({"bound": True, "consent_grant_id": "cg_v", "expires_at": None, "scopes": []})
+        takeout.action_verify_code(
+            parse(["--action", "verify_code", "--phone", "18800001234",
+                   "--bind-id", "b1", "--code", "123456"]),
+            takeout.GatewayClient(vcfg), fresh_cache(), vcfg)
+        vc = captured[-1]
+        check("vc.no_raw_phone_field", "phone" not in vc, str(vc))
+        check("vc.no_11digit", not re.search(r"\d{11}", json.dumps(vc, ensure_ascii=False)), str(vc))
+    finally:
+        takeout.output = orig
+
+
 def main() -> int:
     global _CFG
     _CFG = _cfg("cg_personal")
@@ -483,6 +577,8 @@ def main() -> int:
     test_consent_error_mapping()
     test_doc_v15_error_codes()
     test_menu_v18_fields()
+    test_recommend_menu_limit()
+    test_pii_masking()
 
     print(f"PASS {len(_RESULTS)} checks")
     if _FAILS:
