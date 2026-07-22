@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""ClawDot 本地生活 CLI — skill 共享执行臂，走 open-gateway **MCP** 面。
-
-传输：每个子命令 = 一次 JSON-RPC ``tools/call`` POST 到 ``$GATEWAY_MCP_URL``
-（默认 ``https://eleme-gateway.hicaspian.com/mcp/v1``，stateless、无 initialize、
-无 session）。纯标准库，零第三方依赖。
-
-鉴权（见仓库 DECISIONS.md M3/M4）：
-* ``API_KEY``（agent 身份）→ ``Authorization: Bearer``，唯一必需注入项；
-* 用户授权 = ``consent_grant_id``（cg\\_），作为每个 tool 的参数传递。来源优先级：
-  ``CONSENT_GRANT_ID`` env（只读预注入）→ 共享缓存（``~/.clawdot/credentials.json``，
-  按 sha256(API_KEY) 前 12 位指纹 + phone 键控）中唯一已绑用户 → 多个则要求
-  ``--phone`` → 否则引导用户走 SMS/H5 绑定（``request_user_bind`` →
-  ``verify_user_bind``）。无 admin 静默绑定；绑定成功只写共享缓存，不回写 .env。
-
-子命令 1:1 使用 MCP tool 名（``search_shops`` / ``get_shop_menu`` / ``preview_order``
-/ ``create_order`` …）；``recommend`` 是显式复合命令（搜店 + 并行拉 top N 菜单）。
-输出契约：成功 JSON→stdout；失败「中文一句 + ``RECOVERY[CODE]:`` 指引」→stderr、exit 1。
-"""
 
 from __future__ import annotations
 
@@ -912,7 +894,9 @@ def friendly_error(err: GatewayError, ctx: dict | None = None) -> str:
             return f"{user_msg}\nRECOVERY[USER_NOT_BOUND_NEEDS_SMS]: {_format_recovery(hint, ctx)}"
 
     if err.code in ("AUTH_REQUIRED", "AUTH_INVALID"):
-        return "API_KEY 无效或缺失，请检查 .env 的 API_KEY 配置。"
+        return ("API_KEY 无效或缺失。\n"
+                "RECOVERY[API_KEY_INVALID]: 检查/更换 .env 里的 API_KEY（clw_）；"
+                "还没有 key 就按注册页引导用户获取后写入 .env。")
 
     haystack = f"{err.code} {err.args[0] if err.args else ''}"
     matched = _lookup_by_pattern(haystack)

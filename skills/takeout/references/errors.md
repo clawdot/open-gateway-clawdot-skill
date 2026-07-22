@@ -43,7 +43,7 @@ CLI 把网关错误（MCP 业务信封 `{"error":{code,message}}`）翻译成
 
 | 情形 | CLI 行为 |
 |---|---|
-| HTTP 401/403 | `API_KEY 无效或缺失`（AUTH_INVALID） |
+| HTTP 401/403 | `API_KEY 无效或缺失` + `RECOVERY[API_KEY_INVALID]` |
 | JSON-RPC error（如 unknown tool） | 原 code + message 直出 |
 | MCP isError=true（非网关业务错） | `TOOL_ERROR` + content 文本直出 |
 | 网络不通 | `请求失败：<reason>`（NETWORK） |

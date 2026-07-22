@@ -513,7 +513,7 @@ preview 之后只在用户**显式肯定**时才 create_order，"显式肯定" =
 | 售罄 | "X 卖完了，同款 Y 也行吗？" |
 | 需要选规格 | 默认便宜款，告诉用户"我先按 X 选的" |
 | preview 过期 | 默默重新 preview，"刚才那个我重新算了一下" |
-| 凭证过期（personal） | "登录过期了，更新下 .env 里的 CONSENT_GRANT_ID" |
+| 凭证过期（env 预注入） | 预注入的 CONSENT_GRANT_ID 过期了——引导重新绑定一次（request_user_bind → verify_user_bind），或更换预注入值 |
 | 凭证无效/未绑定（多用户） | 看 stderr 的 RECOVERY 提示；引导该用户重走 request_user_bind → verify_user_bind 拿新 consent_grant |
 
 ---

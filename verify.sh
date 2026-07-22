@@ -63,9 +63,21 @@ grep -q 'GATEWAY_MCP_URL' "$SCRIPT" && ok "reads GATEWAY_MCP_URL" || bad "missin
 grep -q 'consent_grant_id' "$SCRIPT" && ok "passes consent_grant_id argument" || bad "missing consent_grant_id"
 grep -q 'CLAWDOT_HOME' "$SCRIPT" && ok "supports CLAWDOT_HOME redirect" || bad "missing CLAWDOT_HOME"
 
+# MG6 — live end-to-end（opt-in：会创建真实待支付订单，不扣款）
+step "MG6 live end-to-end (opt-in)"
+if [ "${RUN_MG6:-0}" = "1" ] && [ -n "${API_KEY:-}" ] && [ -n "${CONSENT_GRANT_ID:-}" ]; then
+  if python3 "$ROOT/tests/live_smoke_mg6.py"; then
+    ok "live chain green (real pending_payment order, unpaid)"
+  else
+    bad "live chain failed"
+  fi
+else
+  printf '  ⏭️  SKIPPED — 需 RUN_MG6=1 + API_KEY + CONSENT_GRANT_ID env（会创建真实待支付订单）\n'
+fi
+
 printf '\n'
 if [ "$FAILED" -eq 0 ]; then
-  printf '✅ verify.sh: ALL GATES GREEN (MG1-MG5; MG6/MH1 run live with credentials)\n'
+  printf '✅ verify.sh: ALL GATES GREEN (MH1 SMS 绑定全流程为人核项)\n'
 else
   printf '❌ verify.sh: FAILURES ABOVE\n'
 fi
