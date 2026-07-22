@@ -226,6 +226,10 @@ class MCPClient:
     def get_auth_status(self, cg: str) -> dict:
         return self._call("get_user_auth_status", {"consent_grant_id": cg})
 
+    def revoke_bind(self, cg: str) -> dict:
+        """解绑：服务端立即作废该 cg（地址/订单史保留，重绑同号可恢复）。"""
+        return self._call("revoke_user_bind", {"consent_grant_id": cg})
+
     def search_shops(self, cg: str, *, keyword: str | None = None,
                      lat: float | None = None, lng: float | None = None,
                      city: str | None = None, address_id: str | None = None,
@@ -417,6 +421,17 @@ class CredStore:
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         self._save()
+
+    def delete(self, phone: str) -> bool:
+        """Remove the cached grant for phone under this API_KEY. True if removed."""
+        bucket = self._data.get(self.fingerprint)
+        if not isinstance(bucket, dict) or phone not in bucket:
+            return False
+        del bucket[phone]
+        if not bucket:
+            del self._data[self.fingerprint]
+        self._save()
+        return True
 
     def all(self) -> dict[str, str]:
         """{phone: cg} for all non-expired bound users under this API_KEY."""
@@ -1363,7 +1378,7 @@ def cmd_verify_user_bind(args, gw: MCPClient, creds: CredStore, config: Config) 
     if not cg:
         die(f"验证通过但 gateway 未返回 consent_grant_id：{result}")
     creds.set(phone, cg, result.get("expires_at"))
-    output({
+    out = {
         "consent_grant_id": cg,
         "expires_at": result.get("expires_at"),
         "scopes": result.get("scopes"),
@@ -1373,7 +1388,66 @@ def cmd_verify_user_bind(args, gw: MCPClient, creds: CredStore, config: Config) 
             "绑定成功，凭证已写入共享缓存（~/.clawdot/credentials.json，同一 API_KEY 下所有 skill 共用）。"
             "单用户后续调用无需 --phone；多用户场景请始终带 --phone 指定用户。"
         ),
-    })
+    }
+    # env CONSENT_GRANT_ID 优先级最高（M4 只读预注入）——残留旧值会遮蔽这次新绑的凭证
+    if config.consent_grant_id and config.consent_grant_id != cg:
+        out["warning"] = (
+            "检测到 CONSENT_GRANT_ID 环境变量（通常来自 .env）且与本次新绑不同。"
+            "不带 --phone 的调用会优先用它、遮蔽新凭证；若它已失效，请把 .env 里的 "
+            "CONSENT_GRANT_ID 行删掉再重试。"
+        )
+    output(out)
+
+
+def cmd_revoke_user_bind(args, gw: MCPClient, creds: CredStore, config: Config) -> None:
+    """解绑：服务端撤销 consent + 清本机共享缓存条目（地址/订单史保留，重绑同号可恢复）。"""
+    phone = normalize_phone(args.phone) if args.phone else None
+    warning = None
+    if phone:
+        cg = creds.get(phone)
+        if not cg:
+            die(f"用户 {mask_phone(phone)} 在本机没有缓存的绑定，无需解绑。"
+                "若要撤销一个已知的 consent_grant_id，用 "
+                "call revoke_user_bind --json '{\"consent_grant_id\":\"cg_…\"}'。")
+            return
+    elif config.consent_grant_id:
+        cg = config.consent_grant_id
+        warning = (
+            "撤销的是 CONSENT_GRANT_ID 环境变量（通常来自 .env）里的凭证——它现在已失效，"
+            "请把 .env 里的 CONSENT_GRANT_ID 行删掉，否则后续调用会一直用这个死值报授权失效。"
+        )
+    else:
+        bound = creds.all()
+        if len(bound) > 1:
+            die("已绑定多个用户，请带 --phone <11位> 指定要解绑的用户。")
+            return
+        if not bound:
+            die("本机没有缓存的绑定，也没有 CONSENT_GRANT_ID 环境变量，无需解绑。")
+            return
+        phone, cg = next(iter(bound.items()))
+
+    server_state = "revoked"
+    try:
+        gw.revoke_bind(cg)
+    except GatewayError as e:
+        # 该 cg 在服务端已失效（已撤销/过期/轮换）→ 目的已达成，继续清本地
+        if str(e.code).startswith("CONSENT") or e.code == "AUTH_REQUIRED":
+            server_state = "already_invalid"
+        else:
+            die(f"解绑失败：{friendly_error(e, {'phone': phone or '<11位手机号>'})}")
+            return
+
+    cache_deleted = creds.delete(phone) if phone else False
+    out = {
+        "revoked": True,
+        "server_state": server_state,
+        "phone": phone,
+        "cache_deleted": cache_deleted,
+        "message": "解绑完成。用户的地址和订单历史在服务端保留，重新绑定同一手机号即可恢复使用。",
+    }
+    if warning:
+        out["warning"] = warning
+    output(out)
 
 
 # ── Generic passthrough（未文档化 tool 的机械通道，DECISIONS M7 附注）─────────
@@ -1444,6 +1518,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("get_user_auth_status", parents=[common],
                    help="查询当前用户授权状态（验活 consent，不会触发重绑）")
+
+    sub.add_parser("revoke_user_bind", parents=[common],
+                   help="解绑：撤销服务端授权并清除本机共享缓存凭证（多用户带 --phone；"
+                        "地址/订单史保留，重绑同号可恢复）")
 
     p = sub.add_parser("search_addresses", parents=[common],
                        help="列出已存收货地址；带 --keyword 搜索新地址（返回 suggestions[].sug_ref）")
@@ -1542,6 +1620,9 @@ def main() -> None:
         return
     if args.command == "verify_user_bind":
         cmd_verify_user_bind(args, gw, creds, config)
+        return
+    if args.command == "revoke_user_bind":
+        cmd_revoke_user_bind(args, gw, creds, config)
         return
 
     cache = Cache()
