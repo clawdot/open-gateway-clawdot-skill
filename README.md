@@ -1,6 +1,6 @@
 # open-gateway-clawdot-skill
 
-基于 **open-gateway**（ClawDot 对外网关 public v1，consent_grant 体系）的 ClawDot AI Agent 技能集合。
+基于 **open-gateway** 对外 **MCP** 面（consent_grant 体系）的 ClawDot AI Agent 技能集合：CLI 每个子命令 = 一次 JSON-RPC `tools/call`，skill 分发物不含任何内部 HTTP API 路径。
 
 > 从旧 [`clawdot-skills`](https://github.com/clawdot/clawdot-skills)（clawdot-gateway / user_token 体系）迁移而来，
 > **功能等价、底层接口改用 open-gateway**。迁移决策与验收见根目录 [`DECISIONS.md`](DECISIONS.md)。
@@ -18,7 +18,7 @@
 | 传输 | HTTP `/api/v1/*` | **MCP** `tools/call`（`/mcp/v1`，JSON-RPC，stateless） |
 | 用户态鉴权 | `X-User-Token` header | `consent_grant_id`（cg_）作为 tool **参数** |
 | 鉴权模式 | personal / agent(trustedBind) / 用户绑定 | personal / 用户绑定（**agent 静默绑定已移除**） |
-| 绑定接口 | `/api/v1/user/bind/*` | `/api/v1/auth/bind/*`，verify 返回 consent_grant |
+| 绑定接口 | `/api/v1/user/bind/*` | MCP tool `request_user_bind`/`verify_user_bind`，verify 返回 consent_grant |
 | 选店→选菜 | 各自独立 | 搜店返回 `cart_id`，贯穿 menu/preview（skill 内部按 shop_id 缓存） |
 | 下单 item | `{item_id, specs, attrs}` | `{item_id, sku_id?, quantity, ingredient_option_ids?, remark?}` |
 | 下单交接 | preview→`session_id`→order | preview→`preview_id`+`confirmation_token`→create |
