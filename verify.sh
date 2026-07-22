@@ -1,63 +1,83 @@
 #!/usr/bin/env bash
-# Verification gate for the open-gateway takeout skill migration.
-# Mirrors DECISIONS.md §验收标准 G1-G5. Green here is necessary (not sufficient:
-# end-to-end real ordering is H1, human-verified — needs a live API_KEY + real
-# consent). Run: bash verify.sh
+# Verification gate for the CLI×MCP transport migration.
+# Mirrors DECISIONS.md 第二轮 §验收标准 MG1-MG5. Green here is necessary (not
+# sufficient: MG6 live end-to-end + MH1 SMS bind are run with real credentials
+# and evidence attached to the PR). Run: bash verify.sh
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="$ROOT/skills/takeout/scripts/takeout.py"
+SCRIPT="$ROOT/skills/takeout/scripts/clawdot.py"
 FAILED=0
 
 step() { printf '\n=== %s ===\n' "$1"; }
 ok()   { printf '  ✅ %s\n' "$1"; }
 bad()  { printf '  ❌ %s\n' "$1"; FAILED=1; }
 
-# G1 — compiles
-step "G1 py_compile"
+# MG1a — compiles
+step "MG1a py_compile"
 if python3 -m py_compile "$SCRIPT"; then ok "compiles"; else bad "py_compile failed"; fi
 
-# G2 — argparse smoke
-step "G2 argparse smoke"
+# MG1b — argparse smoke（子命令制）
+step "MG1b argparse smoke"
 python3 "$SCRIPT" --help >/dev/null 2>&1 && ok "--help exits 0" || bad "--help failed"
-if python3 "$SCRIPT" --action bogus >/dev/null 2>&1; then
-  bad "invalid --action was accepted"
+if python3 "$SCRIPT" bogus_command >/dev/null 2>&1; then
+  bad "invalid subcommand was accepted"
 else
-  ok "invalid --action rejected"
+  ok "invalid subcommand rejected"
 fi
 
-# G3 + G5 — contract & flow tests
-step "G3+G5 contract & flow tests"
-if python3 "$ROOT/tests/test_takeout_gateway.py"; then ok "tests pass"; else bad "tests failed"; fi
+# MG1/MG3/MG4/MG5 — transport contract / error playbook / cred store / flow tests
+step "MG1+MG3+MG4+MG5 contract & flow tests"
+if python3 "$ROOT/tests/test_clawdot_cli.py"; then ok "tests pass"; else bad "tests failed"; fi
 
-# G4 — operational negative redline (old gateway residue must be gone).
-# Grep for *operational* forms only — the module docstring intentionally names
-# the old symbols to explain the migration, which is fine.
-step "G4 negative redline (no operational legacy residue)"
+# MG2 — negative redline: HTTP /api/v1 transport & legacy auth residue must be
+# gone from the DISTRIBUTED script. Operational forms only — docstrings may
+# mention the migration.
+step "MG2 negative redline (no /api/v1 / legacy auth residue)"
 redline() {
   local pat="$1" label="$2"
   if grep -nE "$pat" "$SCRIPT" >/dev/null; then
-    bad "found legacy residue: $label"
+    bad "found residue: $label"
     grep -nE "$pat" "$SCRIPT" | sed 's/^/      /'
   else
     ok "no $label"
   fi
 }
-redline '"X-User-Token"|X-User-Token"\]|X-Admin-Secret' 'X-User-Token/X-Admin-Secret header'
-redline 'os\.environ\.get\("(ADMIN_SECRET|USER_TOKEN)"' 'ADMIN_SECRET/USER_TOKEN env'
-redline '/api/v1/user/bind/' 'legacy /user/bind/ path'
-redline 'def trusted_bind|\.trusted_bind\(' 'trusted_bind method'
-redline 'session_id|session-id' 'session_id order handoff'
+redline '/api/v1' '/api/v1 path'
+redline '"X-User-Token"|"X-Admin-Secret"|"X-Consent-Grant-Id"' 'legacy auth headers (consent rides as tool argument now)'
+redline 'os\.environ\.get\("(ADMIN_SECRET|USER_TOKEN|REDIS_URL)"' 'ADMIN_SECRET/USER_TOKEN/REDIS_URL env'
+redline 'trusted' 'trustedBind residue'
+redline 'write_env_var|persisted_to_env' '.env writeback (M4: shared cache is the single store)'
 
-# Positive: the new auth surface must be present
-step "G4b new-surface presence"
-grep -q 'X-Consent-Grant-Id' "$SCRIPT" && ok "uses X-Consent-Grant-Id" || bad "missing X-Consent-Grant-Id"
-grep -q 'CONSENT_GRANT_ID' "$SCRIPT" && ok "reads CONSENT_GRANT_ID env" || bad "missing CONSENT_GRANT_ID"
-grep -q '/api/v1/orders/create' "$SCRIPT" && ok "uses /orders/create" || bad "missing /orders/create"
+# 分发目录整体（scripts/ 下不允许再有任何 /api/v1 脚本）
+if grep -rnE '/api/v1' "$ROOT/skills/takeout/scripts/" >/dev/null; then
+  bad "scripts/ still contains /api/v1 references"
+else
+  ok "scripts/ clean of /api/v1"
+fi
+
+# MG2b — positive: the MCP surface must be present
+step "MG2b new-surface presence"
+grep -q 'tools/call' "$SCRIPT" && ok "speaks JSON-RPC tools/call" || bad "missing tools/call"
+grep -q 'GATEWAY_MCP_URL' "$SCRIPT" && ok "reads GATEWAY_MCP_URL" || bad "missing GATEWAY_MCP_URL"
+grep -q 'consent_grant_id' "$SCRIPT" && ok "passes consent_grant_id argument" || bad "missing consent_grant_id"
+grep -q 'CLAWDOT_HOME' "$SCRIPT" && ok "supports CLAWDOT_HOME redirect" || bad "missing CLAWDOT_HOME"
+
+# MG6 — live end-to-end（opt-in：会创建真实待支付订单，不扣款）
+step "MG6 live end-to-end (opt-in)"
+if [ "${RUN_MG6:-0}" = "1" ] && [ -n "${API_KEY:-}" ] && [ -n "${CONSENT_GRANT_ID:-}" ]; then
+  if python3 "$ROOT/tests/live_smoke_mg6.py"; then
+    ok "live chain green (real pending_payment order, unpaid)"
+  else
+    bad "live chain failed"
+  fi
+else
+  printf '  ⏭️  SKIPPED — 需 RUN_MG6=1 + API_KEY + CONSENT_GRANT_ID env（会创建真实待支付订单）\n'
+fi
 
 printf '\n'
 if [ "$FAILED" -eq 0 ]; then
-  printf '✅ verify.sh: ALL GATES GREEN\n'
+  printf '✅ verify.sh: ALL GATES GREEN (MH1 SMS 绑定全流程为人核项)\n'
 else
   printf '❌ verify.sh: FAILURES ABOVE\n'
 fi

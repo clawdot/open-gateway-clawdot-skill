@@ -2,7 +2,7 @@
 
 > 改写自 open-gateway 仓库 `docs/测试配置/OpenClaw纯净环境测试流程.md`。
 > 差异：部署的是**本仓库迁移后的 `takeout` skill**（构建名 `clawdot-takeout`，**open-gateway / consent_grant 体系**），
-> 而非旧 `clawdot-food-takeout`（clawdot-gateway / USER_TOKEN 体系）。鉴权改为「只注入 `API_KEY`，cg 绑定后自动回写」。
+> 而非旧 `clawdot-food-takeout`（clawdot-gateway / USER_TOKEN 体系）。鉴权改为「只注入 `API_KEY`，cg 绑定后写入共享凭证缓存 ~/.clawdot/」；传输改为 MCP tools/call（/mcp/v1）。
 
 ## 与原流程的关键差异（先看这个）
 
@@ -11,7 +11,7 @@
 | skill 来源 | `clawdot-food-takeout-skill.zip`（VH 包） | 本仓库 `python3 build.py takeout` → `dist/takeout-openclaw/` |
 | skill 名 | `clawdot-food-takeout` | `clawdot-takeout` |
 | 网关 | clawdot-gateway | **open-gateway**（public v1） |
-| 鉴权注入 | `API_KEY` + `USER_TOKEN` | **只 `API_KEY`**；`CONSENT_GRANT_ID` 开局留空，绑定后自动回写 |
+| 鉴权注入 | `API_KEY` + `USER_TOKEN` | **只 `API_KEY`**；cg 绑定后写入共享缓存（~/.clawdot/credentials.json），`CONSENT_GRANT_ID` 仅只读预注入 |
 | 配置引导话术 | 让用户给 API_KEY + USER_TOKEN | 让用户给 API_KEY；再 SMS/H5 绑定拿 cg |
 | `.env` | 禁止写（走配置引导） | **本流程要写真 `.env`**（真实联调，见下） |
 
@@ -40,25 +40,25 @@ cd <本仓库根>
 python3 build.py takeout >/dev/null            # 产出 dist/takeout-openclaw/
 SKILL=dist/takeout-openclaw
 
-# 写真 .env（仅 API_KEY；cg 绑定后自动回写；权限交给脚本收 0600）
+# 写真 .env（仅 API_KEY；cg 绑定后存共享缓存，不回写 .env）
 cat > "$SKILL/.env" <<EOF
-GATEWAY_URL=$OG_GATEWAY_URL
+GATEWAY_MCP_URL=$OG_GATEWAY_URL
 API_KEY=$CLAWDOT_API_KEY
 EOF
 
 # 1) 未绑定时：任意业务 action 应返回 RECOVERY[USER_NOT_BOUND_NEEDS_SMS]（预期，不是失败）
-python3 "$SKILL/scripts/takeout.py" --action search --shop-keyword 瑞幸 --lat 31.23 --lng 121.47
+python3 "$SKILL/scripts/clawdot.py" search_shops --keyword 瑞幸 --lat 31.23 --lng 121.47
 
-# 2) 绑定（需真人）：发短信验证码 → 用户回 6 位码 → 验证（cg 自动回写 .env）
-python3 "$SKILL/scripts/takeout.py" --action request_code --phone <11位手机号>
+# 2) 绑定（需真人）：发短信验证码 → 用户回 6 位码 → 验证（cg 写入 ~/.clawdot/credentials.json）
+python3 "$SKILL/scripts/clawdot.py" request_user_bind --phone <11位手机号>
 #   用户回码后：
-python3 "$SKILL/scripts/takeout.py" --action verify_code --phone <11位手机号> --bind-id <上一步的bind_id> --code <用户的6位码>
-#   → 成功后 .env 自动多出 CONSENT_GRANT_ID=cg_…，persisted_to_env=true
+python3 "$SKILL/scripts/clawdot.py" verify_user_bind --phone <11位手机号> --bind-id <上一步的bind_id> --code <用户的6位码>
+#   → 成功后共享缓存记下该手机号的 cg（输出 cached=true）
 
 # 3) 绑定后（无需 --phone）：只读链路应返回真实数据
-python3 "$SKILL/scripts/takeout.py" --action search   --shop-keyword 瑞幸 --lat 31.23 --lng 121.47
-python3 "$SKILL/scripts/takeout.py" --action menu      --shop-id <上一步返回的 shop_id>
-python3 "$SKILL/scripts/takeout.py" --action preview   --shop-id <shop_id> --address-id <addr_id> --items '[{"item_id":"<item_>","quantity":1}]'
+python3 "$SKILL/scripts/clawdot.py" search_shops --keyword 瑞幸 --lat 31.23 --lng 121.47
+python3 "$SKILL/scripts/clawdot.py" get_shop_menu --shop-id <上一步返回的 shop_id>
+python3 "$SKILL/scripts/clawdot.py" preview_order --shop-id <shop_id> --address-id <addr_id> --items '[{"item_id":"<item_>","quantity":1}]'
 #   preview 是试算（返回 preview_id+confirmation_token+价格），**不要**接着 order（那才是真实下单/花钱）
 ```
 
@@ -88,7 +88,7 @@ GATEWAY_TOKEN=local-og-takeout-ui
 ```bash
 cp -R dist/takeout-openclaw "$ROOT/workspace/skills/clawdot-takeout"
 cat > "$ROOT/workspace/skills/clawdot-takeout/.env" <<EOF
-GATEWAY_URL=$OG_GATEWAY_URL
+GATEWAY_MCP_URL=$OG_GATEWAY_URL
 API_KEY=$CLAWDOT_API_KEY
 EOF
 openclaw --profile "$PROFILE" skills list   # 应看到 clawdot-takeout

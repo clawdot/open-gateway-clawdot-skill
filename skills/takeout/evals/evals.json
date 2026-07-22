@@ -22,7 +22,7 @@
     {
       "id": 3,
       "prompt": "我不在公司，送到家里",
-      "expected_output": "使用 addresses action 列出已保存地址，匹配'家'标签或让用户确认，切换配送地址后继续点餐流程",
+      "expected_output": "使用 search_addresses 列出已保存地址，匹配'家'标签或让用户确认，切换配送地址后继续点餐流程",
       "files": []
     },
     {
@@ -34,13 +34,13 @@
     {
       "id": 5,
       "prompt": "我的外卖到哪了",
-      "expected_output": "使用 order_status action 查询最近订单状态，直接告诉用户配送进度",
+      "expected_output": "使用 get_order_status 查询最近订单状态，直接告诉用户配送进度",
       "files": []
     },
     {
       "id": 6,
       "prompt": "要个新地址，送到南京市鼓楼区中山路200号",
-      "expected_output": "用 addresses --address-keyword 搜索地址，从 suggestions 中选择匹配项的 token，问齐收件人姓名/手机/门牌后用 --select-token 保存",
+      "expected_output": "用 search_addresses --keyword 搜索地址，从 suggestions 中选择匹配项的 sug_ref，问齐收件人姓名/手机/门牌后用 select_address --sug-ref 保存",
       "files": []
     }
   ]

@@ -150,3 +150,68 @@
 - 本仓库是**新建**目标仓库（源 README 占位），无既有运行行为可破坏 → 纯新增，无字节级红线。
 - 但对**外部契约**守一条：agent 调用面（action 名、stdout JSON 为成功信号、RECOVERY 机制）
   与旧 skill 保持兼容语义；item 模型/order 入参的变更已在 D5 记录为「接口强制变更」，须在 GUIDE/SKILL 同步说明，不得静默改。
+
+---
+
+# 第二轮：传输层迁移 HTTP /api/v1 → CLI×MCP（2026-07-22 grill-me 盘定）
+
+> 背景：产品策略 = /api/v1 不对外（仅特殊大客户），对外正门 = MCP（streamable HTTP `/mcp/v1`，
+> stateless+json_response 已由网关仓 test_mcp_stateless_transport.py 坐实）。
+> 本轮把 skill 调用面从 HTTP /api/v1 切到 MCP tools/call；第一轮的鉴权模型（api_key+cg、无 trusted）
+> 语义不变，仅传输与持久化细节按下列 M 条目演进。被取代的第一轮条目均显式标注 supersede。
+
+## 已对齐（M 系列，用户已逐条确认）
+
+- **M1〔目标定性〕**：目标 = **表面收敛 + key 控权**。对外只留 MCP 一个门，/api/v1 收回内网/白名单；
+  "只给我开放的人"靠签发/吊销 agent key 实现；**不追求**接口对 CLI 持有者不可见（客户端保密不可行，
+  非目标；美团 paotui.js 混淆动机=藏客户端签名算法，我方无此物）。
+- **M2〔CLI 定位〕**：自家 skill **共享执行臂**。一个 Python CLI、多 skill 复用；契约只对自家 skill
+  负责，不做对外产品承诺（客户接入继续直接挂 MCP）。
+- **M3〔admin 模式〕**：CLI 不支持 ADMIN_SECRET/trustedBind（第一轮 D2 已去除，本轮重申适用于 MCP 面）；
+  内部 trustedBind 需求走内网工具直连 /api/v1，admin 凭据永不进分发物。
+- **M4〔consent 持久化〕**（**supersede 第一轮 D2 的 .env 回写与 skill 本地 per-phone 缓存、G6**）：
+  共享缓存 `~/.clawdot/credentials.json`，条目按 **(sha256(API_KEY) 前 12 位指纹, phone)** 键控，
+  目录 0700/文件 0600，`CLAWDOT_HOME` env 可重定向。**废除 .env 回写**（单一持久化源）；
+  `CONSENT_GRANT_ID` env 降为只读预注入覆盖项。解析优先级：env（只读）→ 缓存该 key 指纹下唯一 phone
+  → 多个要求 --phone → 引导绑定。缓存 miss/疑失效先 `get_user_auth_status` 验活，**绝不静默重绑**
+  （重绑轮换作废旧 cg）。理由：同实例多 skill 不互踢 cg、skill 升级重装不丢绑定、跨 key 指纹天然隔离。
+- **M5〔覆盖对账〕**：**零缺口、零服务端改动**。9 个既有 action 全部有 MCP tool 对应
+  （bind→request/verify_user_bind、搜店→search_shops、菜单→get_shop_menu、地址→search/select_address、
+  下单→preview_order/create_order/get_order_status）；实现中发现字段级出参缺口 → **停下重盘**，
+  不私自改服务端。
+- **M6〔传输实现〕**：Python 纯 stdlib 裸 JSON-RPC `tools/call` POST `/mcp/v1`（stateless，无 initialize、
+  无 session），零第三方依赖、**不引 mcp SDK、不混淆**。参照美团样板抄：references/ 三件套
+  （commands/params/errors）、子命令+flags 风格、固定路径配置。
+- **M7〔子命令契约〕**（**supersede 第一轮 D6"action 名不变"**）：子命令 **1:1 用 MCP tool 名**；
+  `recommend` 保留为显式标注的**复合子命令**（包装 search_shops，美团 preview_and_submit 同模式）。
+  IO 契约不变：stdout=成功 JSON / stderr=中文+`RECOVERY[CODE]` / exit 1。
+  附注（PR 审核时可否决）：CLI 通用分发器机械支持全部 20 个 tool，但 SKILL.md/references **只文档化**
+  与旧功能等价的流程（第一轮 D7"不主动引入"由文档面继续把守，不靠 CLI 阉割）。
+- **M8〔范围与流程〕**：只切 takeout；真源 = 本仓库；开发者 skill（errand-smoke/gateway-probe）留
+  /api/v1 内部面不动。**PR 不自动合并**：独立环境端到端验证 MCP 通路后，用户人工审核、手动合并。
+- **M9〔负向红线〕**：① 本轮 open-gateway 网关仓库**零 diff**（可机器验证：无 commit）；
+  ② PR 合并前 main 上旧 HTTP 版保持可用（合并即切换点，可回退）；③ 被取代的第一轮条目在本文件
+  显式标 supersede，不留双权威。
+- **M10〔验收深度〕**：自动链打穿到 `create_order` 出 pending_payment 真单（不扣款，独立账号
+  cg_8a7ebf，避 sibling 污染）；SMS 绑定全流程人核一次（一次性号；理由：真短信+cg 轮换雷，自动化烧号）。
+
+## 验收标准（M 轮；replace 第一轮 G3/G4/G6，其余 G 保留语义换传输断言）
+
+- **MG1 [自动] 编译+单测**：py_compile 通过；monkeypatch HTTP 层断言每个子命令出站 =
+  `POST $GATEWAY_MCP_URL`（默认 https://eleme-gateway.hicaspian.com/mcp/v1）、
+  body={jsonrpc,method:"tools/call",params:{name:<tool>,arguments:{...}}}、
+  headers 含 `Authorization: Bearer <API_KEY>`+`Accept: application/json`；用户态 tool 的 arguments
+  含 `consent_grant_id`，绑定类 tool 不含。
+- **MG2 [自动] 负向红线 grep**：分发脚本零命中 `/api/v1`、`X-User-Token`、`X-Admin-Secret`、
+  `ADMIN_SECRET`、`USER_TOKEN`、`trusted`（操作性符号；docstring 迁移说明除外）。
+- **MG3 [自动] 错误面映射单测**：MCP 业务错误信封 `{"error":{code,message}}`（isError=False）→
+  stderr 中文+定向 RECOVERY；第一轮 G7/G8 的错误码 playbook 全量迁移并保持定向命中（含
+  MISSING_REQUIRED_SELECTION 先于 MUST_PICK_REQUIRED、BELOW_MIN_PURCHASE 先于 BELOW_MIN_ORDER）。
+- **MG4 [自动] 缓存契约单测**：(key指纹,phone) 键控读写、0600/0700 权限断言、解析优先级
+  env→唯一→--phone→引导、CLAWDOT_HOME 重定向、验活不静默重绑。
+- **MG5 [自动] 流程贯穿单测**（继承 G5）：cart_id 从 search_shops 出参被 menu/preview 隐式取回、
+  preview_id+confirmation_token 贯穿到 create；cart 缓存失效 → RECOVERY[SHOP_CART_MISS]。
+- **MG6 [自动·需网络+凭据] 端到端**：CLI 真环境 search_addresses→search_shops→get_shop_menu→
+  get_item_options→preview_order→create_order 出 pending_payment（M10 口径）；无凭据环境 skip 并显式标注。
+- **MH1 [人核] SMS/H5 绑定全流程一次**（一次性号）＋贴脱敏输出；为何不自动：真短信+cg 轮换雷。
+- **MH2 [人核] 网关仓零 diff**：交付时贴 open-gateway 仓 `git log` 确认无本任务 commit。

@@ -43,25 +43,25 @@ curl -fsSL https://raw.githubusercontent.com/clawdot/open-gateway-clawdot-skill/
 
 | 变量 | 说明 | 必需 |
 |------|------|------|
-| `GATEWAY_URL` | ClawDot open-gateway API 地址 | 推荐（未配置时脚本会引导补齐） |
+| `GATEWAY_MCP_URL` | ClawDot open-gateway MCP 端点（默认公网地址；接受 origin，自动补 /mcp/v1） | 可选 |
 | `API_KEY` | open-gateway API 密钥（clw_，agent 身份） | **唯一必需注入项**（缺失时返回 RECOVERY[API_KEY_MISSING] 引导去注册页获取） |
-| `CONSENT_GRANT_ID` | 用户授权凭证（cg_，=一个用户）。**开局留空**：用户绑定后由 verify_code 自动回写；也可手动预注入长效 cg | 可选 |
+| `CONSENT_GRANT_ID` | 用户授权凭证（cg_，=一个用户）的只读预注入项；正常流程绑定后存共享缓存，无需配置 | 可选 |
 | `CLAWDOT_SETUP_URL` | API_KEY 缺失时的注册/登录引导页（默认 ClawDot developer 登录页） | 可选 |
-| `REDIS_URL` | 跨进程共享按手机号缓存的 consent_grant（多用户） | 可选 |
+| `CLAWDOT_HOME` | 共享凭证缓存目录（默认 ~/.clawdot） | 可选 |
 | `DEFAULT_LAT` / `DEFAULT_LNG` | 默认配送坐标（冷启动兜底） | 推荐 |
 
-> **鉴权一条线**：只需注入 `API_KEY`。首跑业务 action 会返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`，
-> 按指引引导用户走短信验证码（默认）或 H5 链接授权（`request_code` → `verify_code`，需 `--phone`）；
-> verify 成功后 cg **自动回写 `.env` 的 `CONSENT_GRANT_ID`**，之后单用户业务调用无需 `--phone`。
+> **鉴权一条线**：只需注入 `API_KEY`。首跑业务命令会返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`，
+> 按指引引导用户走短信验证码（默认）或 H5 链接授权（`request_user_bind` → `verify_user_bind`，需 `--phone`）；
+> verify 成功后 cg **写入共享凭证缓存**（`~/.clawdot/credentials.json`），之后单用户业务调用无需 `--phone`。
 > 多用户（一个 api_key 服务多人）则各自绑定、业务调用带 `--phone`。open-gateway 无 admin 静默绑定，每个用户须本人授权一次。
 
 ### 4. 验证安装
 
 ```bash
-python3 <安装目录>/scripts/takeout.py --action addresses
+python3 <安装目录>/scripts/clawdot.py search_addresses
 ```
 
-已绑定（`.env` 有 `CONSENT_GRANT_ID`）返回 JSON 地址列表即成功；首次未绑定会返回
+已绑定（共享缓存有凭证，或预注入了 `CONSENT_GRANT_ID`）返回 JSON 地址列表即成功；首次未绑定会返回
 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]` 引导绑定——这是预期行为，不是失败。
 
 ## 可用技能
@@ -88,5 +88,5 @@ mkdir -p ~/.claude/skills/clawdot-takeout
 curl -fsSL "https://github.com/clawdot/open-gateway-clawdot-skill/releases/latest/download/${ASSET}" | tar xz -C ~/.claude/skills/clawdot-takeout
 
 # 3. 配置环境变量后验证
-python3 ~/.claude/skills/clawdot-takeout/scripts/takeout.py --action addresses
+python3 ~/.claude/skills/clawdot-takeout/scripts/clawdot.py search_addresses
 ```
