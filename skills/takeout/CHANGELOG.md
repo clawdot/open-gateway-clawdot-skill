@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.0.0] - 2026-07-22 — 传输层迁移：HTTP /api/v1 → CLI×MCP
+
+脚本从 `takeout.py`（HTTP `/api/v1` 客户端）重构为 `clawdot.py`（**MCP 客户端**）：
+每个子命令 = 一次 JSON-RPC `tools/call` POST 到 `GATEWAY_MCP_URL`（默认
+`https://eleme-gateway.hicaspian.com/mcp/v1`，stateless、纯标准库）。业务功能、
+裁剪器、错误 playbook、`RECOVERY[CODE]` 机制与 stdout/stderr 契约全部保留。
+决策见根 `DECISIONS.md`「第二轮」M1–M10。
+
+### Changed（破坏性）
+
+- **子命令制，1:1 网关 MCP tool 名**：`--action search` → `search_shops`、`menu` →
+  `get_shop_menu`、`addresses` → `search_addresses` + `select_address`（拆分）、
+  `preview`/`order`/`order_status` → `preview_order`/`create_order`/`get_order_status`、
+  `request_code`/`verify_code` → `request_user_bind`/`verify_user_bind`；`recommend`
+  保留为复合命令。参数名对齐 tool 入参：`--shop-keyword`/`--address-keyword` →
+  `--keyword`、`--select-token` → `--sug-ref`、`--address-tag` → `--tag`。
+- **凭据持久化改共享缓存**（不再回写 `.env`）：cg 写
+  `$CLAWDOT_HOME/credentials.json`（默认 `~/.clawdot/`），按 `sha256(API_KEY)[:12]`
+  + 手机号键控、0700/0600。同实例多 skill 共用同一 consent 不互踢；skill 升级
+  重装不丢绑定。`CONSENT_GRANT_ID` env 降级为只读预注入项。
+- **环境变量**：`GATEWAY_URL` → `GATEWAY_MCP_URL`；`REDIS_URL` 移除（共享文件缓存
+  取代 Redis 共享 cg）；新增可选 `CLAWDOT_HOME`。
+- 用户态鉴权从 `X-Consent-Grant-Id` header 改为 `consent_grant_id` tool 参数。
+
+### Added
+
+- 新子命令 `get_item_options`（批量查规格，含选中标记）、`get_user_auth_status`
+  （验活 consent，不触发重绑）、`call <tool> --json`（未文档化 tool 的机械通道）。
+- `select_address` 直接支持 `--tag`（旧版 select 后需补一次 update）。
+- `references/` 三件套：commands.md / params.md / errors.md（LLM 契约文档）。
+
+### Removed
+
+- `takeout.py`、`.env` 回写（`write_env_var`）、裸 socket Redis 客户端、
+  order_id URL 拼接（order_id 现走 JSON 参数，无 path 注入面）。
+
 ## [1.1.0] - 2026-07-08 — 对齐 API 文档 v1.8（菜单增量字段）
 
 对照官方《API接口说明文档 v1.8》做增量对齐——只补**落在既有下单主链路（menu→preview→order）**、

@@ -22,8 +22,8 @@
 - ❌ **禁止编造网络/SSL/超时错误**。脚本如果真撞 SSL/超时，stderr 会有完整 traceback；没看到就是没发生。
 - ❌ **禁止编造 HTTP 错误码**。比如 stderr 里没出现 "1010" / "ENDPOINT_NOT_FOUND"，就**不准**说"返回 error code 1010"。
 - ❌ **禁止猜测"key 失效 / 服务不可用 / 后端故障"**。这些都是 stderr 里出现明确文字才能下结论。
-- ❌ **禁止自己造 endpoint**。本 SKILL 列出的 action 之外，**绝不**用 curl/raw HTTP 试 `/api/v1/auth/*` 等其他路径。
-- ❌ **禁止编 bind_id / request_id / 编验证码 (123456) 当占位符**。bind_id / request_id 必须**真实**来自 `request_code` 的 stdout；验证码必须**真实**来自用户消息原文。
+- ❌ **禁止自己造 endpoint**。本 SKILL 列出的命令之外，**绝不**用 curl/raw HTTP 直连网关任何路径（MCP 端点或其他）。
+- ❌ **禁止编 bind_id / request_id / 编验证码 (123456) 当占位符**。bind_id / request_id 必须**真实**来自 `request_user_bind` 的 stdout；验证码必须**真实**来自用户消息原文。
 - ❌ **禁止改写/脱敏/缩短 h5_url**。H5 授权链接必须**原样**发给用户，参数动一个字符授权就失效。
 
 ### 允许行为
@@ -40,7 +40,7 @@
 | "API 返回 HTTP 403 (error code: 1010)" | gateway 没这个 code，纯幻觉 | code 是字符串，没数字 1010 |
 | "API key 失效，请申请新的" | 实际是 CONSENT_GRANT 过期 | 看 stderr 真实文案，别瞎换 |
 | "发送 SMS 撞 SSL 问题" | 脚本明明 200 成功 | 没看 stdout 直接编 |
-| `verify_code --code 123456` | 用户根本没输码 | 验证码必须从用户消息原文提取 |
+| `verify_user_bind --code 123456` | 用户根本没输码 | 验证码必须从用户消息原文提取 |
 
 ---
 
@@ -48,72 +48,72 @@
 
 ### Step 0: 解析授权凭证 consent_grant
 
-**鉴权模型一句话**：`API_KEY`（agent 身份）是唯一要开局注入的；`consent_grant`（cg_，= 一个用户）由用户本人走一次 SMS/H5 绑定拿到，**绑定成功后脚本自动把 cg 回写进 `.env` 的 `CONSENT_GRANT_ID`**，之后业务调用不带 `--phone` 也能用（单用户）。
+**鉴权模型一句话**：`API_KEY`（agent 身份）是唯一要开局注入的；`consent_grant`（cg_，= 一个用户）由用户本人走一次 SMS/H5 绑定拿到，**绑定成功后写入共享凭证缓存**（`~/.clawdot/credentials.json`，按 API_KEY+手机号键控，同一 API_KEY 下所有 skill 共用、skill 升级重装不丢），之后业务命令不带 `--phone` 也能用（单用户）。
 
 | 情形 | 调用方式 | 凭证从哪来 |
 |---|---|---|
-| **单用户（默认）** | 业务 action 不传 `--phone` | 读 `.env` 的 `CONSENT_GRANT_ID`（绑定后自动回写的那个；也可手动预注入长效 cg） |
-| **多用户**（一个安装服务多人） | 业务 action 带 `--phone <11位>` | 各用户各自绑定，按手机号缓存 cg；env 里的 cg = 默认/最近绑定用户 |
+| **单用户（默认）** | 业务命令不传 `--phone` | 共享缓存中唯一已绑用户的 cg；也可用 `CONSENT_GRANT_ID` 环境变量预注入长效 cg（只读，优先级最高） |
+| **多用户**（一个安装服务多人） | 业务命令带 `--phone <11位>` | 各用户各自绑定，按手机号存共享缓存 |
 
-> 一个 `api_key` 可服务多个用户，一个 `cg` 表示一个用户（= 旧 user_token，90 天有效、到期/轮换要重绑）。
+> 一个 `api_key` 可服务多个用户，一个 `cg` 表示一个用户（90 天有效、到期/轮换要重绑）。
 > open-gateway **没有 admin 静默绑定**（旧 agent/trustedBind 已移除）：每个用户都必须本人走一次 SMS/H5 授权。
-> 绑定步骤（request_code/verify_code）需要 `--phone`；绑定成功回写 env 后，单用户的业务调用就不用再带 `--phone` 了。
+> 绑定步骤（request_user_bind/verify_user_bind）需要 `--phone`；绑定成功写入共享缓存后，单用户的业务命令就不用再带 `--phone` 了。缓存里有多个用户时必须带 `--phone` 指定。
 
 #### 新装 / 未配置场景（按脚本返回走，不要自己预判）
 
 **场景 A：连 `API_KEY` 都没配** → 任何调用返回 `RECOVERY[API_KEY_MISSING]`，按顺序做三件事：
 
 1. 把注册链接发给用户："先打开这个链接登录/注册 ClawDot，把页面里的 API_KEY 发给我～"（链接在脚本 stderr 里，原样转发）
-2. 用户发来 key → 写入 skill 根目录 `.env`（`API_KEY=<key>`，`GATEWAY_URL` 没配也一并写）。**不要复述、不要展示 key**
+2. 用户发来 key → 写入 skill 根目录 `.env`（`API_KEY=<key>`，`GATEWAY_MCP_URL` 没配也一并写）。**不要复述、不要展示 key**
 3. 接着进入场景 B 的一步式提问
 
-**场景 B：有 `API_KEY`，没 `CONSENT_GRANT_ID`（用户绑定模式）** → 业务调用返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`。绑定有两种方式：
+**场景 B：有 `API_KEY`，还没绑定用户** → 业务调用返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`。绑定有两种方式：
 
 | 方式 | 适合场景 | 用户要做什么 |
 |---|---|---|
 | **短信验证码**（默认） | 用户方便收短信 | 回复 6 位验证码 |
 | **H5 链接授权** | 用户收不到短信 / 更习惯点链接 | 点开链接在饿了么页面确认授权 |
 
-**手机号和方式必须合成一句问**，例如："**先告诉我手机号，顺便选一下用 H5 还是验证码方式绑定哦～**"已知手机号就只问方式。用户不选或说随便 → 走短信。绑定成功后 cg 自动回写 `.env`——**单用户后续业务 action 直接调即可，不用再带 `--phone`**；只有一个安装服务多个用户时，业务调用才带 `--phone` 指定是哪个用户。
+**手机号和方式必须合成一句问**，例如："**先告诉我手机号，顺便选一下用 H5 还是验证码方式绑定哦～**"已知手机号就只问方式。用户不选或说随便 → 走短信。绑定成功后 cg 写入共享缓存——**单用户后续业务命令直接调即可，不用再带 `--phone`**；只有一个安装服务多个用户时，业务调用才带 `--phone` 指定是哪个用户。
 
 **短信流程：**
 
 ```
-1. 调 takeout --phone <11位> --action request_code
+1. 调 request_user_bind --phone <11位>
    → stdout 返回 {"auth_type": "sms", "bind_id": "<id>", "phone_masked": "188****2920", "next_step": "..."}
    → SMS 已真实发到用户手机
-   
+
 2. 跟用户说："验证码已发到 188****2920，请回复 6 位数字"
    ⚠️ 这一步必须等用户回复！不要替用户编 123456 或任何占位码！
-   
+
 3. 用户回复（比如 "048231"）
-   → 调 takeout --phone <11位> --action verify_code --bind-id <id> --code 048231
-   → 验码通过，consent_grant 自动回写 .env（persisted_to_env=true）+ 按手机号缓存
-   
-4. 重新调原本想做的业务 action（addresses / recommend / preview / order）
-   → 单用户：不带 --phone 直接调，读 env 里刚回写的 cg；多用户：带 --phone 指定
+   → 调 verify_user_bind --phone <11位> --bind-id <id> --code 048231
+   → 验码通过，consent_grant 写入共享缓存（cached=true）
+
+4. 重新调原本想做的业务命令（search_addresses / recommend / preview_order / create_order）
+   → 单用户：不带 --phone 直接调（缓存唯一用户自动命中）；多用户：带 --phone 指定
 ```
 
 **H5 流程：**
 
 ```
-1. 调 takeout --phone <11位> --action request_code --auth-type h5
+1. 调 request_user_bind --phone <11位> --auth-type h5
    → stdout 返回 {"auth_type": "h5", "request_id": "<id>", "h5_url": "https://...", "expires_in": 300, ...}
-   
+
 2. 把 h5_url **原样**发给用户："点开这个链接完成授权（5 分钟内有效）：<h5_url>"
    ⚠️ 链接一个字符都不能改，不要脱敏、不要缩短、不要换行截断！
-   
+
 3. 等用户说"好了 / 授权完成"
-   → 调 takeout --phone <11位> --action verify_code --auth-type h5 --request-id <id>
-   → 返回 bound:true → consent_grant 自动回写 .env + 按手机号缓存
+   → 调 verify_user_bind --phone <11位> --auth-type h5 --request-id <id>
+   → 返回 bound:true → consent_grant 写入共享缓存
    → 报"还没完成授权"→ 提醒用户点开链接，等用户再次确认后用同一个 request_id 重调
    → 报"链接已过期"→ 重新走第 1 步拿新链接
    ⚠️ verify 只在用户说完成后调，禁止自己高频轮询
-   
-4. 重新调原本想做的业务 action（单用户不带 --phone，读 env 回写的 cg；多用户带 --phone）
+
+4. 重新调原本想做的业务命令（单用户不带 --phone；多用户带 --phone）
 ```
 
-**bind_id / request_id 来源铁律**：必须是**前一步 `request_code` 的真实返回**，绝不能编。
+**bind_id / request_id 来源铁律**：必须是**前一步 `request_user_bind` 的真实返回**，绝不能编。
 
 **code 来源铁律**：必须是**用户消息原文里的 6 位数字**，不是占位符、不是 123456、不是猜的。
 
@@ -121,7 +121,7 @@
 
 #### 通用要点
 
-- 进入 skill 后，**第一步直接执行任意业务 action**，让脚本内部解析 consent_grant / 触发绑定 hint。**不要**先口头判断"用户没注册饿了么 / 没绑定账号"。
+- 进入 skill 后，**第一步直接执行任意业务命令**，让脚本内部解析 consent_grant / 触发绑定 hint。**不要**先口头判断"用户没注册饿了么 / 没绑定账号"。
 - `--phone` 只吃国内 11 位手机号。`+86` 前缀脚本会自动剥掉，**不要**自己改成别的格式。
 - 手机号通常来自上下文（`<user_identity>` 的 `<phone>` 字段、用户主电话等）。没有就问用户。
 - 同一用户同一会话里 `--phone` 保持一致；切换用户/手机号 = 切换缓存桶。
@@ -133,14 +133,14 @@
 
 模糊意图（吃饭/饿了/随便/推荐/点外卖/不知道吃啥/吃点啥）
   → 不调工具，直接给 2-3 个品类方向，等用户选
-  → 同时并行调 addresses（无参）拿地址
+  → 同时并行调 search_addresses（无参）拿地址
 
 具体品类（麻辣烫/汉堡/奶茶/咖啡/烧烤/轻食/粥/炸鸡...）
-  → recommend --shop-keyword "品类" --top-n 4
-  → 同时并行调 addresses（无参）拿地址
+  → recommend --keyword "品类" --top-n 4
+  → 同时并行调 search_addresses（无参）拿地址
 
 品牌名（塔斯汀/瑞幸/喜茶/肯德基/麦当劳...）
-  → recommend --shop-keyword "品牌" --top-n 4
+  → recommend --keyword "品牌" --top-n 4
   → 如果只有 1 家 → 直接展菜单
 
 ⚠️ 拿不准 → 当"模糊"处理，先给方向。
@@ -169,17 +169,17 @@
 ### Step 2: 定位（与 Step 1 并行）
 
 ```
-addresses（无参）返回 → 判断：
+search_addresses（无参）返回 → 判断：
 
 saved[] 非空 → 用 saved[0] 确认："送映月台那边嘛？"
 saved[] 为空 → "送哪儿呢？"
 多条 saved 匹配 → 问用户选哪条（不展示 ID）
 
 用户给了新地址 →
-  addresses --address-keyword "..." [--city "..."]
+  search_addresses --keyword "..." [--city "..."]
   → 从 suggestions 里挑最匹配，记下它的 sug_ref（脚本输出字段名是 sug_ref；旧版叫 token）
   → 如果 suggestion.requires_detail=true（POI）→ 必须先问"几号楼几室"
-  → addresses --select-token sug_xxx --contact-name X --contact-phone Y [--address-detail "..."]
+  → select_address --sug-ref sug_xxx --contact-name X --contact-phone Y [--address-detail "..."]
   搜不到 → 换问法 1 次 → 还搜不到 → "这个位置送不了"
 
 ⚠️ 禁止把 saved 列出来给用户看（隐私）。禁止追问超 2 次。
@@ -202,13 +202,13 @@ saved[] 为空 → "送哪儿呢？"
 **传参规则**：
 
 - `--city` 接受中文（`北京`/`北京市`）、拼音（`beijing`）、缩写（`BJ`）
-- 用户明确说过城市 → 每次 `addresses` 都带 `--city`，哪怕后面只说"换个地方"
+- 用户明确说过城市 → 每次 `search_addresses` 都带 `--city`，哪怕后面只说"换个地方"
 - 同一会话没换城市 → 沿用上次的 city，**不要反复追问**
 - 传了 `--city` 时，脚本会丢弃 `--lat/--lng`（city 胜过历史坐标，这是网关规则）
 
 #### 脚本报 `[需要地址]` 怎么办
 
-任何 action 返回 stderr 以 `[需要地址]` 开头 = 脚本拿不到坐标。**当场问用户当前位置**，不要：
+任何命令返回 stderr 以 `[需要地址]` 开头 = 脚本拿不到坐标。**当场问用户当前位置**，不要：
 
 - ❌ 把 `[需要地址]` 后面那句报错原文转给用户
 - ❌ 自己挑一个城市坐标（北京/上海/杭州 都不行）
@@ -281,8 +281,8 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 
 ```
 用户说"就这家/可以的/第一家" → 只是选了店，不是选了菜。
-必须 menu --shop-id → 展示菜单让用户自己选 SKU。
-绝不能直接跳到 preview/order。
+必须 get_shop_menu --shop-id → 展示菜单让用户自己选 SKU。
+绝不能直接跳到 preview_order/create_order。
 ```
 
 **菜单是一个完整信息块，不要拆气泡**。招牌/配菜/酒水在同一个气泡里，用户会全部扫完再选。❌ 禁止菜单分类拆成 3-4 段。
@@ -320,9 +320,9 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 不想选可以直接来个香辣鸡腿堡，再搭个粗薯就是一顿了——或者你想看看别的？
 </example>
 
-#### 🍲 店铺必选组（menu 概览带 `required_groups` 时必看）
+#### 🍲 店铺必选组（get_shop_menu 概览带 `required_groups` 时必看）
 
-有些店（麻辣烫、部分套餐店）**整单必须再点一类商品**才能下单。menu 概览返回 `required_groups[]` 时：
+有些店（麻辣烫、部分套餐店）**整单必须再点一类商品**才能下单。get_shop_menu 概览返回 `required_groups[]` 时：
 
 - 每组给了 `name`（如「必选好汤」）、`min_select`（选几个）、`candidates`（可选的汤/主食，带名称/价格）。
 - 展菜单时**顺带把这组亮出来让用户挑**（"这家要配个汤底，草本骨汤还是番茄汤？"），选中的 candidate 当普通商品一起进 items[]。
@@ -332,10 +332,10 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 ### Step 4.5: 用户选了菜 → 确认规格（有 sku_options / ingredient_options 时）
 
 ```
-用户选了一个商品（"来杯杨枝甘露"）→ menu --shop-id --item-id 拿商品详情，看 sku_options / ingredient_options。
+用户选了一个商品（"来杯杨枝甘露"）→ get_shop_menu --shop-id --item-id 拿商品详情，看 sku_options / ingredient_options。
 （菜单概览/分类/菜名搜索已含每项详情；--item-id 拿单品完整结构最稳妥。）
 
-无 sku_options、无 ingredient_options → 跳过，直接进 Step 5 preview
+无 sku_options、无 ingredient_options → 跳过，直接进 Step 5 preview_order
 有其一 → 告知当前默认选择 + 列出可改的选项：
   "杨枝甘露，先按大杯少糖给你选的。杯型有大杯/中杯，甜度有少糖/全糖/不加糖。要调直接说~"
 
@@ -354,15 +354,15 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
   - 默认：sku 用第一项（或 price 最低项）；ingredient 用 `selected_by_default=true` 的项
   - **必须**把可选项列给用户（用户看不到饿了么界面，不知道能选什么）
   - 用户说的选项必须在 menu 返回的可选范围内，不存在的不能传
-  - 用户说"行/可以/好" → 进 preview
-  - 用户说"换大杯/加珍珠/少糖" → 更新对应 sku_id / ingredient_option_ids，确认一句后进 preview
+  - 用户说"行/可以/好" → 进 preview_order
+  - 用户说"换大杯/加珍珠/少糖" → 更新对应 sku_id / ingredient_option_ids，确认一句后进 preview_order
   - 汉堡/炒饭等无 sku_options 无 ingredient_options 的品类 → 不走这步，不问
 ```
 
 ### Step 5: 用户选了菜 → Preview
 
 ```
-preview --shop-id --address-id --items '[...]' [--note "..."] → 拿到 preview_id + confirmation_token + 价格：
+preview_order --shop-id --address-id --items '[...]' [--note "..."] → 拿到 preview_id + confirmation_token + 价格：
 items JSON 用 open-gateway 形态（id 全部来自当前店 menu 输出）：
   [{"item_id": "item_x", "quantity": 1, "sku_id": "sku_y", "ingredient_option_ids": ["opt_a"], "remark": "少冰"}]
   - sku_id：用户选的规格/杯型，取自该商品 sku_options[].sku_id；不传则用默认 SKU
@@ -373,14 +373,14 @@ items JSON 用 open-gateway 形态（id 全部来自当前店 menu 输出）：
 失败 → 静默重试最多 1 次，第 2 次仍失败告诉用户换组合
 ```
 
-**preview / menu 错误回收**（按 stderr 的 RECOVERY 提示走）：
+**preview_order / get_shop_menu 错误回收**（按 stderr 的 RECOVERY 提示走）：
 
 - `RECOVERY[REFERENCE_STALE]`（PUBLIC_REFERENCE_INVALID）→ shop_id / item_id / sku_id / cart 已过期：
-  重新 search/recommend 拿新 shop_id，再 menu --shop-id 拿新 item_id / sku_id / option_id，然后重 preview。**禁止跨店复用 id、禁止把中文菜名当 item_id。**
-- `RECOVERY[SHOP_CART_MISS]` → 这家店还没搜过（或上下文过期）：先 search --shop-keyword '<店名/品类>'（或 recommend），再用返回的 shop_id 重试。
-- `RECOVERY[MUST_PICK_REQUIRED]` → 网关要求加必选项（**商品内部**的加料必选组）：menu --shop-id --item-id 看 ingredient_options 的必选组（group_name），把用户选中项的 option_id 收进 items[].ingredient_option_ids 重 preview。偏好类（锅底/糖度/温度/辣度）**列给用户选，禁止替用户做主**。
-- `RECOVERY[MISSING_REQUIRED_SELECTION]` → **店铺级必选组**（整单必须再点一个商品，如麻辣烫「必选好汤」，和上面的商品内部必选组是两回事）：menu --shop-id 看返回的 `required_groups[]`，从每组 `candidates` 里按 `min_select` 选够，作为普通商品加进 items[] 重 preview。**列给用户选，别替用户做主。**
-- `RECOVERY[BELOW_MIN_PURCHASE]` → 某商品**起购份数**没达标（≠ 整单未达起送价）：把该商品的 quantity 提到菜单详情里的 `min_purchase` 及以上重 preview，或让用户换个无起购限制的商品。加量/加钱先跟用户说一声。
+  重新 search/recommend 拿新 shop_id，再 get_shop_menu --shop-id 拿新 item_id / sku_id / option_id，然后重 preview_order。**禁止跨店复用 id、禁止把中文菜名当 item_id。**
+- `RECOVERY[SHOP_CART_MISS]` → 这家店还没搜过（或上下文过期）：先 search_shops --keyword '<店名/品类>'（或 recommend），再用返回的 shop_id 重试。
+- `RECOVERY[MUST_PICK_REQUIRED]` → 网关要求加必选项（**商品内部**的加料必选组）：get_shop_menu --shop-id --item-id 看 ingredient_options 的必选组（group_name），把用户选中项的 option_id 收进 items[].ingredient_option_ids 重 preview_order。偏好类（锅底/糖度/温度/辣度）**列给用户选，禁止替用户做主**。
+- `RECOVERY[MISSING_REQUIRED_SELECTION]` → **店铺级必选组**（整单必须再点一个商品，如麻辣烫「必选好汤」，和上面的商品内部必选组是两回事）：get_shop_menu --shop-id 看返回的 `required_groups[]`，从每组 `candidates` 里按 `min_select` 选够，作为普通商品加进 items[] 重 preview_order。**列给用户选，别替用户做主。**
+- `RECOVERY[BELOW_MIN_PURCHASE]` → 某商品**起购份数**没达标（≠ 整单未达起送价）：把该商品的 quantity 提到菜单详情里的 `min_purchase` 及以上重 preview_order，或让用户换个无起购限制的商品。加量/加钱先跟用户说一声。
 
 **Preview 输出模板**（一段话，不用小票格式）：
 
@@ -392,24 +392,24 @@ items JSON 用 open-gateway 形态（id 全部来自当前店 menu 输出）：
 
 **🔒 下单确认硬规则（涉及花钱，零例外）：**
 
-preview 之后只在用户**显式肯定**时才 order，"显式肯定" = 限以下短回应：
+preview 之后只在用户**显式肯定**时才 create_order，"显式肯定" = 限以下短回应：
 
 - "好" / "嗯" / "行" / "可以" / "下单" / "就这个" / "OK" / "👍"
 
 任何**带问号的回复**、任何**离题回复**（问红包、问优惠、问别的菜）一律不算确认。先回答用户问题，**再问一次**"那就下单啦？"，等下一条消息再判断。
 
 ```
-用户显式确认 → order --preview-id <prv_> --confirmation-token <cf_>
+用户显式确认 → create_order --preview-id <prv_> --confirmation-token <cf_>
   （两个值都来自上一步 preview 的返回；confirmation_token 一次性消费）
 回复必带 payment_link 作为可点击链接展示。
 绝对不能省略付款链接，禁止脱敏（jwt 参数或 https://clawdot.* 短链都原样保留）。
 
-用户加菜/改量/换品 → 重新 preview 拿新的 preview_id + confirmation_token
+用户加菜/改量/换品 → 重新 preview_order 拿新的 preview_id + confirmation_token
 ```
 
 #### 付款链路
 
-`order` 返回里 `payment_link`（来自网关 `payment_action.action_url`）就是付款链接，原样发给用户点开支付。下单走标准支付链路，**无需也不要传付款渠道参数**。
+`create_order` 返回里 `payment_link`（来自网关 `payment_action.action_url`）就是付款链接，原样发给用户点开支付。下单走标准支付链路，**无需也不要传付款渠道参数**。
 
 下单只需 `--preview-id` + `--confirmation-token`，不带任何渠道参数。
 
@@ -432,7 +432,7 @@ preview 之后只在用户**显式肯定**时才 order，"显式肯定" = 限以
 用户说"还有吗/还有别的吗"
   ⚠️ 先看上下文：上一轮是在看某家店的菜单，还是在选店？
   → 上一轮展示的是【某家店的菜单/单品】：
-    "别的"= 这家店的其他品类/单品 → menu 同店其他分类
+    "别的"= 这家店的其他品类/单品 → get_shop_menu 同店其他分类
   → 上一轮展示的是【多家店推荐】：
     "别的"= 同品类再推 2-3 家（recommend 同 keyword）
   → 不问"换不换方向"，不跳品类
@@ -448,10 +448,10 @@ preview 之后只在用户**显式肯定**时才 order，"显式肯定" = 限以
   → 保留地址，重新 recommend
 
 用户说"换个地方送"
-  → 重新 addresses，items 保留
+  → 重新 search_addresses，items 保留
 
 用户说"再加个 XX / 去掉 XX / 换大杯"
-  → menu 找新 SKU → 重新 preview
+  → get_shop_menu 找新 SKU → 重新 preview
 
 用户说"算了"
   → "好"。不追问不劝。
@@ -470,10 +470,10 @@ preview 之后只在用户**显式肯定**时才 order，"显式肯定" = 限以
 ## 并行 & 性能规则
 
 - 不互相依赖的 tool call **必须同一轮发出**
-- ⚠️ `addresses` 和 `recommend` **不能并行**：`recommend` 必须带用户实际坐标，否则可能搜到 `DEFAULT_LAT/LNG` 附近的店。先 addresses 拿到坐标，再 recommend
+- ⚠️ `search_addresses` 和 `recommend` **不能并行**：`recommend` 必须带用户实际坐标，否则可能搜到 `DEFAULT_LAT/LNG` 附近的店。先 addresses 拿到坐标，再 recommend
 - 单轮 tool call ≤ 8
-- `addresses`（无参）session 内只调一次
-- `menu --shop-id` 拿分类概览；`--category` / `--shop-keyword` 缩小范围；`--item-id` 拿单品完整规格（sku_options/ingredient_options）
+- `search_addresses`（无参）session 内只调一次
+- `get_shop_menu --shop-id` 拿分类概览；`--category` / `--keyword` 缩小范围；`--item-id` 拿单品完整规格（sku_options/ingredient_options）
 - 调 tool 前先翻历史，5 分钟内且没说"换一家" → 复用结果
 - tool 调用之间不输出文字（闷头做事做完再开口）
 - preview 返回的 preview_id + confirmation_token 约 10 分钟过期；换收件人 = 新 select
@@ -514,7 +514,7 @@ preview 之后只在用户**显式肯定**时才 order，"显式肯定" = 限以
 | 需要选规格 | 默认便宜款，告诉用户"我先按 X 选的" |
 | preview 过期 | 默默重新 preview，"刚才那个我重新算了一下" |
 | 凭证过期（personal） | "登录过期了，更新下 .env 里的 CONSENT_GRANT_ID" |
-| 凭证无效/未绑定（多用户） | 看 stderr 的 RECOVERY 提示；引导该用户重走 request_code → verify_code 拿新 consent_grant |
+| 凭证无效/未绑定（多用户） | 看 stderr 的 RECOVERY 提示；引导该用户重走 request_user_bind → verify_user_bind 拿新 consent_grant |
 
 ---
 
@@ -551,8 +551,8 @@ preview 之后只在用户**显式肯定**时才 order，"显式肯定" = 限以
 
 **案例 0 — 越权下单（P0 底线问题）**：
 用户说"可以的"（同意选这家店）→ 助手直接跳到订单确认 → 用户："我都没看菜单呢"
-- ❌ 选店后直接 preview+下单，跳过展示菜单和选 SKU
-- ✅ 选店后先展示菜单招牌款，让用户自己选菜，再 preview
+- ❌ 选店后直接 preview_order+下单，跳过展示菜单和选 SKU
+- ✅ 选店后先展示菜单招牌款，让用户自己选菜，再 preview_order
 
 **案例 1 — 同一对话质量衰减**：
 - ❌ 后半段偷懒：不分组、无描述词、裸疑问收尾

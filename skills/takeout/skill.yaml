@@ -1,10 +1,10 @@
 name: takeout
 display_name: ClawDot 外卖助手
 description: >
-  通过 ClawDot open-gateway 外卖网关帮用户点外卖。
-  支持搜店、选菜、下单、查单全流程；鉴权两选一：
-  personal（CONSENT_GRANT_ID）/ 用户绑定（短信验证码默认，可选 H5 链接授权，拿到用户 consent_grant）。
-version: 1.1.0
+  通过 ClawDot open-gateway 外卖网关帮用户点外卖（MCP 传输：CLI 每个子命令
+  = 一次 JSON-RPC tools/call）。支持搜店、选菜、下单、查单全流程；
+  鉴权：API_KEY（agent）+ 用户 SMS/H5 绑定拿 consent_grant（共享缓存持久化）。
+version: 2.0.0
 license: MIT
 author: clawdot
 
@@ -13,57 +13,65 @@ tags: [food, delivery, ordering]
 locale: zh-CN
 
 # 鉴权一条线：只需注入 API_KEY（agent）；用户走一次 SMS/H5 绑定拿 cg（=一个用户），
-# verify 成功后自动回写 CONSENT_GRANT_ID 到 .env，之后业务调用无需 --phone（单用户）。
-# 多用户：一个 api_key 服务多个用户，各自绑定、调用带 --phone 指定（按手机号缓存）。
+# verify 成功后写入共享凭证缓存（~/.clawdot/credentials.json，按 API_KEY+手机号键控，
+# 可用 CLAWDOT_HOME 重定向），之后业务调用无需 --phone（单用户）。
+# 多用户：一个 api_key 服务多个用户，各自绑定、调用带 --phone 指定。
 # open-gateway 无 admin 静默绑定（旧 agent/trustedBind 已移除）。
-auth_model: personal_or_user_binding
+auth_model: user_binding_with_shared_cache
 
 requires:
   bins: [python3]
   env:
-    - name: GATEWAY_URL
-      description: ClawDot open-gateway API 地址（未配置时脚本引导用户完成配置并给出默认公网地址）
+    - name: GATEWAY_MCP_URL
+      description: ClawDot open-gateway MCP 端点（默认 https://eleme-gateway.hicaspian.com/mcp/v1；接受 origin，自动补 /mcp/v1）
       optional: true
     - name: API_KEY
       description: ClawDot open-gateway API 密钥（clw_；未配置时返回 RECOVERY[API_KEY_MISSING] 引导用户去注册页获取）
       optional: true
     - name: CONSENT_GRANT_ID
-      description: 用户授权凭证（cg_，=一个用户）；开局留空——用户走一次 SMS/H5 绑定后由 verify_code 自动回写本项，之后无需 --phone。也可手动预注入长效 cg 跳过绑定
+      description: 用户授权凭证（cg_，=一个用户）的只读预注入项（无状态部署跳过绑定用）；正常流程绑定后写入共享缓存，无需配置本项
       optional: true
-    - name: REDIS_URL
-      description: 可选 Redis 连接串，用于跨进程共享按手机号缓存的 consent_grant
+    - name: CLAWDOT_HOME
+      description: 共享凭证缓存目录（默认 ~/.clawdot；容器/多租户部署可重定向）
       optional: true
     - name: CLAWDOT_SETUP_URL
       description: API_KEY 缺失时引导用户注册/登录的页面地址（默认 ClawDot developer 登录页）
       optional: true
     - name: DEFAULT_LAT
-      description: 默认纬度（personal 模式冷启动兜底；用户绑定模式忽略）
+      description: 默认纬度（单用户模式冷启动兜底；多用户模式忽略）
       optional: true
     - name: DEFAULT_LNG
-      description: 默认经度（personal 模式冷启动兜底；用户绑定模式忽略）
+      description: 默认经度（单用户模式冷启动兜底；多用户模式忽略）
       optional: true
 
-entry_point: scripts/takeout.py
+entry_point: scripts/clawdot.py
 
+# 子命令 1:1 对应网关 MCP tool 名；recommend 为客户端复合命令。
 actions:
-  - name: addresses
-    description: 查询、搜索、新建收货地址（支持 --city 强制走城市搜索）
-  - name: search
+  - name: search_addresses
+    description: 列出已存收货地址；带 --keyword 搜索新地址（支持 --city 强制走城市搜索）
+  - name: select_address
+    description: 把地址候选（--sug-ref）或已存地址（--address-id）落成收货地址（可带 --tag）
+  - name: search_shops
     description: 按关键词搜索附近店铺（返回每店上下文，供后续选菜/下单复用）
   - name: recommend
-    description: 搜店 + 并行取 top N 家菜单一步到位
-  - name: menu
-    description: 菜单钻取（概览→分类→商品详情；--shop-keyword 跨分类搜菜；商品详情含 sku_options / ingredient_options / min_purchase / available_quantity；概览含店铺必选组 required_groups）
-  - name: preview
+    description: 复合命令：搜店 + 并行取 top N 家菜单一步到位
+  - name: get_shop_menu
+    description: 菜单钻取（概览→分类→商品详情；--keyword 跨分类搜菜；商品详情含 sku_options / ingredient_options / min_purchase / available_quantity；概览含店铺必选组 required_groups）
+  - name: get_item_options
+    description: 批量查多个商品的完整规格/加料（含当前选中标记）
+  - name: preview_order
     description: 预览订单（价格、配送费、优惠），返回 preview_id + confirmation_token
-  - name: order
+  - name: create_order
     description: 确认并提交订单（--preview-id + --confirmation-token，返回付款链接）
-  - name: order_status
+  - name: get_order_status
     description: 查询订单配送状态
-  - name: request_code
+  - name: get_user_auth_status
+    description: 查询用户授权状态（验活 consent，不触发重绑）
+  - name: request_user_bind
     description: 用户绑定第 1 步（默认发短信验证码；--auth-type h5 签发授权链接）
-  - name: verify_code
-    description: 用户绑定第 2 步（短信验码 / H5 轮询授权结果），成功后缓存 consent_grant
+  - name: verify_user_bind
+    description: 用户绑定第 2 步（短信验码 / H5 轮询授权结果），成功后写共享凭证缓存
 
 platforms:
   - claude-code

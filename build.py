@@ -81,6 +81,14 @@ def build_skill(name, skill_info, output_root):
                 dirs_exist_ok=True, ignore=IGNORE_PATTERNS,
             )
 
+        # Copy references/ (commands/params/errors contract docs)
+        references_dir = os.path.join(skill_dir, "references")
+        if os.path.isdir(references_dir):
+            shutil.copytree(
+                references_dir, os.path.join(out_dir, "references"),
+                dirs_exist_ok=True, ignore=IGNORE_PATTERNS,
+            )
+
         # Copy evals/
         evals_dir = os.path.join(skill_dir, "evals")
         if os.path.isdir(evals_dir):
