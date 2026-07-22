@@ -10,6 +10,7 @@
 | `request_user_bind` | 绑定第 1 步：发短信验证码 / 签发 H5 授权链接 | `--phone` |
 | `verify_user_bind` | 绑定第 2 步：短信验码 / H5 轮询结果，成功写共享缓存 | `--phone`（+ sms: `--bind-id --code`；h5: `--auth-type h5 --request-id`）|
 | `get_user_auth_status` | 查询用户授权状态（验活，不触发重绑） | 无 |
+| `revoke_user_bind` | 解绑：撤销服务端授权 + 清本机缓存凭证（多用户带 `--phone`） | 无 |
 | `search_addresses` | 列出已存地址；带 `--keyword` 搜索新地址 | 无 |
 | `select_address` | 候选/已存地址落成收货地址 | `--sug-ref` 或 `--address-id`；`--contact-name --contact-phone` |
 | `search_shops` | 搜索/浏览附近店铺 | 无（首搜需坐标或 `--city`）|

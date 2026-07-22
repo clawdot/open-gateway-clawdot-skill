@@ -29,6 +29,7 @@ metadata:
 | get_user_auth_status | 查询用户授权状态（验活凭证） | phone? |
 | request_user_bind | 用户绑定第 1 步：默认发短信验证码；`auth_type=h5` 返回授权链接 | phone, auth_type?（sms/h5，默认 sms） |
 | verify_user_bind | 用户绑定第 2 步：短信验码 / H5 轮询授权结果，成功后写共享缓存 | phone + bind_id + code（sms）；phone + auth_type=h5 + request_id（h5） |
+| revoke_user_bind | 解绑：撤销服务端授权并清本机缓存凭证（地址/订单史保留，重绑同号可恢复） | phone?（多用户必带） |
 
 ### 鉴权：只需注入 API_KEY，cg 绑定后写入共享缓存
 

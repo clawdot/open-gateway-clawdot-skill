@@ -523,6 +523,106 @@ def test_verify_bind_writes_shared_cache() -> None:
     check("bindflow.no_env_key", "persisted_to_env" not in out, str(out)[:150])
 
 
+# ── M11/M12: bind lifecycle follow-up（解绑 + env 遮蔽警告）──────────────────
+
+def test_cred_store_delete() -> None:
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_a", None)
+    creds.set("13900009999", "cg_b", None)
+    check("del.removes", creds.delete("13800008888") is True, "")
+    check("del.gone", creds.get("13800008888") is None, str(creds.all()))
+    check("del.other_intact", creds.get("13900009999") == "cg_b", str(creds.all()))
+    check("del.unknown_false", creds.delete("13700007777") is False, "")
+    reopened = clawdot.CredStore("KEY", creds.path.parent)
+    check("del.persisted",
+          reopened.get("13800008888") is None and reopened.get("13900009999") == "cg_b",
+          str(reopened.all()))
+
+
+def test_revoke_user_bind() -> None:
+    gw = clawdot.MCPClient(_CFG)
+
+    # 单用户不带 --phone：撤销缓存唯一用户 + 清条目
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_only", None)
+    set_tool_response({"revoked": True})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config())
+    name, args_sent = rpc_of(last_call())
+    check("rev.tool", name == "revoke_user_bind", name)
+    check("rev.cg", args_sent.get("consent_grant_id") == "cg_only", str(args_sent))
+    check("rev.cache_deleted",
+          out.get("cache_deleted") is True and creds.get("13800008888") is None,
+          str(out)[:150])
+
+    # --phone 命中：只清目标用户
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_a", None)
+    creds.set("13900009999", "cg_b", None)
+    set_tool_response({"revoked": True})
+    run_ok(clawdot.cmd_revoke_user_bind,
+           parse(["revoke_user_bind", "--phone", "13900009999"]), gw, creds, make_config())
+    check("rev.phone_target",
+          creds.get("13900009999") is None and creds.get("13800008888") == "cg_a",
+          str(creds.all()))
+
+    # 多用户不带 --phone → 要求 --phone，零出站
+    creds.set("13900009999", "cg_b2", None)  # 补回第二个用户（上一步刚被定向解绑）
+    calls_before = len(_CALLS)
+    err = run_dying(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                    gw, creds, make_config())
+    check("rev.multi_die", "--phone" in err, err)
+    check("rev.multi_no_outbound", len(_CALLS) == calls_before, "")
+
+    # --phone 缓存 miss → die，零出站
+    calls_before = len(_CALLS)
+    err = run_dying(clawdot.cmd_revoke_user_bind,
+                    parse(["revoke_user_bind", "--phone", "13700007777"]),
+                    gw, creds, make_config())
+    check("rev.miss_die", "没有缓存的绑定" in err, err)
+    check("rev.miss_no_outbound", len(_CALLS) == calls_before, "")
+
+    # env 来源：撤 env cg、缓存不动、带 warning
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_cached", None)
+    set_tool_response({"revoked": True})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config(consent_grant_id="cg_env"))
+    _, args_sent = rpc_of(last_call())
+    check("rev.env_cg", args_sent.get("consent_grant_id") == "cg_env", str(args_sent))
+    check("rev.env_cache_intact", creds.get("13800008888") == "cg_cached", str(creds.all()))
+    check("rev.env_warning", "CONSENT_GRANT_ID" in out.get("warning", ""), str(out)[:200])
+
+    # 服务端已失效（CONSENT_*）→ 目的已达成：仍成功、照样清本地
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_dead", None)
+    set_tool_response({"error": {"code": "CONSENT_GRANT_INVALID", "message": "revoked"}})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config())
+    check("rev.dead_ok",
+          out.get("server_state") == "already_invalid" and out.get("cache_deleted") is True,
+          str(out)[:150])
+    check("rev.dead_cleared", creds.get("13800008888") is None, str(creds.all()))
+
+
+def test_verify_bind_env_shadow_warning() -> None:
+    gw = clawdot.MCPClient(_CFG)
+    payload = {"bound": True, "consent_grant_id": "cg_new",
+               "expires_at": "2099-01-01T00:00:00+08:00", "scopes": ["delivery"]}
+    argv = ["verify_user_bind", "--phone", "13800008888", "--bind-id", "b1", "--code", "111111"]
+
+    # env 残留不同值 → stdout JSON 附 warning
+    set_tool_response(payload)
+    out = run_ok(clawdot.cmd_verify_user_bind, parse(argv), gw, fresh_creds(),
+                 make_config(consent_grant_id="cg_old_env"))
+    check("shadow.warns", "CONSENT_GRANT_ID" in out.get("warning", ""), str(out)[:200])
+
+    # 无 env → 无 warning（原输出逐字段不变）
+    set_tool_response(payload)
+    out = run_ok(clawdot.cmd_verify_user_bind, parse(argv), gw, fresh_creds(), make_config())
+    check("shadow.absent", "warning" not in out, str(out)[:200])
+
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -536,6 +636,9 @@ def main() -> int:
         test_consent_resolution_priority,
         test_flow_threading,
         test_verify_bind_writes_shared_cache,
+        test_cred_store_delete,
+        test_revoke_user_bind,
+        test_verify_bind_env_shadow_warning,
     ]
     for t in tests:
         t()

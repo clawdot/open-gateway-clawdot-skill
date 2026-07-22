@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0] - 2026-07-22 — 绑定生命周期收尾：解绑命令 + env 遮蔽警告
+
+### Added
+
+- **`revoke_user_bind` 一等子命令**（此前仅 `call` 后门可达）：服务端撤销 consent +
+  清除本机共享缓存条目一步完成（`CredStore` 新增 `delete`）。多用户带 `--phone`；
+  不带时按「env cg → 缓存唯一用户」解析；缓存多用户则要求 `--phone`。服务端已失效
+  （CONSENT_*/AUTH_REQUIRED）视为目的已达成，照样清本地并回 `server_state:
+  "already_invalid"`。解绑不删数据：地址/订单史保留，重绑同号恢复。
+- **env 遮蔽警告**：`verify_user_bind` 成功时若检测到 `CONSENT_GRANT_ID` 环境变量
+  （通常来自 `.env`）与新绑 cg 不同，stdout JSON 附 `warning` 提示删除 `.env` 残留行
+  （env 值优先级最高，会遮蔽新凭证）；`revoke_user_bind` 撤销 env 来源凭证时同样提示。
+
 ## [2.0.0] - 2026-07-22 — 传输层迁移：HTTP /api/v1 → CLI×MCP
 
 脚本从 `takeout.py`（HTTP `/api/v1` 客户端）重构为 `clawdot.py`（**MCP 客户端**）：

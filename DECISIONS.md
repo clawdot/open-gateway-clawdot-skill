@@ -215,3 +215,33 @@
   get_item_options→preview_order→create_order 出 pending_payment（M10 口径）；无凭据环境 skip 并显式标注。
 - **MH1 [人核] SMS/H5 绑定全流程一次**（一次性号）＋贴脱敏输出；为何不自动：真短信+cg 轮换雷。
 - **MH2 [人核] 网关仓零 diff**：交付时贴 open-gateway 仓 `git log` 确认无本任务 commit。
+
+---
+
+## 第三轮（follow-up）：绑定生命周期收尾（2026-07-22，用户口头确认「可以的」）
+
+背景：v2.0.0 合并后复盘发现两缺口——解绑仅 `call` 后门可达且不清本地缓存（对比美团
+pt-passport logout 有一等命令）；`.env` 残留 `CONSENT_GRANT_ID`（M4 优先级最高）会遮蔽
+新绑凭证且无提示。
+
+### 已对齐
+
+- **M11 一等解绑命令** → `revoke_user_bind` 子命令：服务端撤销 + 清本机共享缓存条目
+  （CredStore 新增 delete）。解析顺序与 M4 一致（--phone → env → 缓存唯一；多用户必带
+  --phone）；服务端已失效（CONSENT_*/AUTH_REQUIRED）视为目的达成，照清本地、
+  `server_state: "already_invalid"`；撤销 env 来源凭证时警告清 .env 残留行。
+- **M12 env 遮蔽警告** → `verify_user_bind` 成功时检测到 env `CONSENT_GRANT_ID` 与新 cg
+  不同 → stdout JSON 附 `warning`（不动 stderr、不改 exit code、其余字段逐字段不变）。
+
+### 验收标准
+
+- **MG11 [自动] 解绑单测**：目的断言=解绑后该用户缓存条目消失且服务端收到
+  revoke_user_bind(cg)；手段断言=多用户不带 --phone 零出站即拒、缓存 miss 零出站即拒、
+  env 来源不动缓存、already_invalid 照清本地。（tests/test_clawdot_cli.py::test_revoke_user_bind
+  + test_cred_store_delete，随 verify.sh 跑）
+- **MG12 [自动] 遮蔽警告单测**：env 残留≠新 cg → 输出含 warning 提及 CONSENT_GRANT_ID；
+  无 env → 无 warning 键。（test_verify_bind_env_shadow_warning）
+- **负向红线 [自动]**：既有 12 子命令行为不变——原 85 断言全数保持绿（现 105）；
+  MG1–MG5 门禁不动；verify.sh 全绿。
+- **[人核] 线上解绑不自动跑**：为何不自动——revoke 会真实作废活跃 cg（188/199 号在用），
+  属破坏性写操作；留待用户在测试环境用一次性号验证（可并入 MH1 一起跑）。
