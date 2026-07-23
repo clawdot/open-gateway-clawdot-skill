@@ -5,3 +5,8 @@ dist/
 .claude/
 .remember/
 docs/superpowers/
+
+# 内部材料：不进公开仓库（本地保留）
+DECISIONS.md
+docs/
+.idea/

@@ -75,6 +75,20 @@ else
   printf '  ⏭️  SKIPPED — 需 RUN_MG6=1 + API_KEY + CONSENT_GRANT_ID env（会创建真实待支付订单）\n'
 fi
 
+step "MG7 behavior evals (opt-in)"
+# 行为回归：真模型 × mock 工具层（不打网关、不花钱），断言全确定性。
+# 改 GUIDE 前后跑同一批比分数——掉分即话术退步。模型有随机性，掉分先复跑确认再下结论。
+if [ "${RUN_EVALS:-0}" = "1" ] && [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+  python3 "$ROOT/build.py" takeout >/dev/null 2>&1
+  if python3 "$ROOT/tests/evals/run_evals.py"; then
+    ok "behavior evals all green"
+  else
+    bad "behavior evals regressed (见上面 ✗ 行；复跑确认非随机后再改 GUIDE)"
+  fi
+else
+  printf '  ⏭️  SKIPPED — 需 RUN_EVALS=1 + DEEPSEEK_API_KEY env（跑真模型，约 ¥0.2/轮）\n'
+fi
+
 printf '\n'
 if [ "$FAILED" -eq 0 ]; then
   printf '✅ verify.sh: ALL GATES GREEN (MH1 SMS 绑定全流程为人核项)\n'
