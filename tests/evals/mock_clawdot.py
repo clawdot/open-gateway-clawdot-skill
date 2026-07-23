@@ -79,7 +79,9 @@ TEA_SHOPS = {
 
 TEA_MENU = {
     "shop": {"shop_id": "shop_tea1", "name": "1点点(西溪天虹店)", "available": True},
-    "categories": [{"name": "奶茶自由配", "items": ["item_sjnq", "item_qqmm"]}],
+    # 两个分类、四个商品：让"同店还有别的品类"成为可能，否则 context-else 断言测不出东西
+    "categories": [{"name": "奶茶自由配", "items": ["item_sjnq", "item_qqmm"]},
+                   {"name": "鲜果茶", "items": ["item_xgc", "item_bmg"]}],
     "items": [
         {"item_id": "item_sjnq", "name": "四季奶青", "price": 1900, "category_name": "奶茶自由配",
          "description": "茶味经典", "monthly_sales": 800,
@@ -105,8 +107,12 @@ TEA_MENU = {
          ]},
         {"item_id": "item_qqmm", "name": "QQ美莓奶茶", "price": 2000, "category_name": "奶茶自由配",
          "description": "招牌果味", "monthly_sales": 600, "sku_options": [], "ingredient_options": []},
+        {"item_id": "item_xgc", "name": "西瓜果茶", "price": 1800, "category_name": "鲜果茶",
+         "description": "夏日清爽", "monthly_sales": 300, "sku_options": [], "ingredient_options": []},
+        {"item_id": "item_bmg", "name": "白桃芒果茶", "price": 2100, "category_name": "鲜果茶",
+         "description": "果香浓", "monthly_sales": 450, "sku_options": [], "ingredient_options": []},
     ],
-    "total_items": 2,
+    "total_items": 4,
 }
 
 MLT_MENU = {
@@ -184,7 +190,12 @@ def main() -> None:
         OUT(SEARCH_SUGGESTIONS if flags.get("keyword") else SAVED_ADDRESSES)
     elif cmd == "select_address":
         if not flags.get("contact-name") or not flags.get("contact-phone"):
-            die("保存地址需要 --contact-name 和 --contact-phone。")
+            die("保存地址需要 --contact-name 和 --contact-phone。\n"
+                "RECOVERY[CONTACT_REQUIRED]: 问用户收件人姓名和手机号后重试。")
+        # 真网关对 POI 候选（requires_detail=true）强制要门牌号
+        if flags.get("sug-ref", "").startswith("sug_") and not flags.get("address-detail"):
+            die("这个地址是新地点（POI），需要具体门牌号/楼层/房间号。\n"
+                "RECOVERY[POI_DETAIL_REQUIRED]: 问到门牌号后带 --address-detail 重试。")
         OUT({"address_id": "addr_new01", "address": "南京市鼓楼区中山路200号",
              "contact_name": flags.get("contact-name"), "tag": flags.get("tag")})
     elif cmd in ("search_shops", "recommend"):
@@ -219,7 +230,39 @@ def main() -> None:
         OUT({"items": [by_id.get(it.get("item_id"), {"item_id": it.get("item_id"),
                                                      "error": "not found"}) for it in items]})
     elif cmd == "preview_order":
-        OUT(PREVIEW)
+        # 真网关会按 items 校验：id 有效性 / 起送价。mock 同契约，才测得出错误处置行为。
+        sid = flags.get("shop-id", "")
+        menu = MLT_MENU if "mlt" in sid else TEA_MENU
+        prices = {i["item_id"]: i["price"] for i in menu["items"]}
+        for g in menu.get("required_groups", []):
+            prices.update({c["item_id"]: c["price"] for c in g["candidates"]})
+        try:
+            items = json.loads(flags.get("items", "[]"))
+        except json.JSONDecodeError:
+            die("--items 必须是 JSON 数组")
+            return
+        unknown = [it.get("item_id") for it in items if it.get("item_id") not in prices]
+        if unknown:
+            die(f"商品 {unknown[0]} 在这家店不存在或已失效。\n"
+                "RECOVERY[REFERENCE_STALE]: 重新 get_shop_menu 拿当前店的 item_id 再试，"
+                "禁止跨店复用 id、禁止把中文菜名当 item_id。")
+        total = sum(prices.get(it.get("item_id"), 0) * max(1, int(it.get("quantity", 1)))
+                    for it in items)
+        shop_min = next((s["min_order_amount"] for s in
+                         (SHOPS["shops"] + TEA_SHOPS["shops"]) if s["shop_id"] == sid), 0)
+        if total < shop_min:
+            gap = shop_min - total
+            die(f"未达起送价，还差 ¥{gap / 100:.1f}。\n"
+                f"RECOVERY[BELOW_MIN_ORDER]: get_shop_menu --shop-id {sid} 翻菜单挑 1-2 个低价单品，"
+                "或告诉用户差多少让用户决定加什么。涉及花钱必须用户点头。")
+        out = dict(PREVIEW)
+        out["items"] = [{"name": next((i["name"] for i in menu["items"]
+                                       if i["item_id"] == it.get("item_id")), it.get("item_id")),
+                         "quantity": int(it.get("quantity", 1)),
+                         "price": prices.get(it.get("item_id"), 0)} for it in items]
+        out["original_price"] = total
+        out["total_price"] = total + 100 + 440 - 500
+        OUT(out)
     elif cmd == "create_order":
         if not flags.get("preview-id") or not flags.get("confirmation-token"):
             die("缺少 --preview-id 或 --confirmation-token")
