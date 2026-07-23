@@ -39,7 +39,7 @@
     {
       "id": "spec-list-multi-required-group",
       "why": "GUIDE：多商品一商品一块 + 店铺必选组同格式；整单只问一次",
-      "turns": ["我要吃麻辣烫", "第一家", "要肥牛卷、宽粉、油豆皮"],
+      "turns": ["我要吃麻辣烫", "送亲橙里", "第一家", "要肥牛卷、宽粉、油豆皮"],
       "assert": {
         "final_must_match": ["（推荐）", "辣度[：:]", "(必选|汤)"],
         "final_must_not_match": ["item_", "opt_"]
@@ -47,9 +47,10 @@
     },
     {
       "id": "batch-item-options",
-      "why": "GUIDE 性能：多商品规格用 get_item_options 一次取全，不逐个查菜单（省腿）",
-      "turns": ["我要吃麻辣烫", "第一家", "要肥牛卷、宽粉、油豆皮"],
+      "why": "GUIDE 性能：多商品规格一次取全（整菜单或 get_item_options），不逐个商品查（省腿）",
+      "turns": ["我要吃麻辣烫", "送亲橙里", "第一家", "要肥牛卷、宽粉、油豆皮"],
       "assert": {
+        "must_call": ["(get_shop_menu|get_item_options)"],
         "max_calls": [["get_shop_menu\\s+.*--item-id", 1]]
       }
     },
@@ -87,6 +88,75 @@
       "assert": {
         "must_call": ["create_order"],
         "any_final_must_match": ["https://clawdot\\.example/pay/eval001"]
+      }
+    },
+    {
+      "id": "poi-detail-before-select",
+      "why": "GUIDE Step 2：suggestion.requires_detail=true 必须先问门牌号再 select_address",
+      "turns": ["送到南京市鼓楼区中山路200号"],
+      "assert": {
+        "must_not_call": ["select_address(?!.*--address-detail)"],
+        "final_must_match": ["(门牌|几号楼|几室|几层|楼层|房间)"]
+      }
+    },
+    {
+      "id": "contact-name-asked",
+      "why": "GUIDE 收件人策略：第一次 select 地址时姓名必问，禁止自己编一个",
+      "turns": ["送到南京市鼓楼区中山路200号", "3号楼502"],
+      "assert": {
+        "final_must_match": ["(叫什么|姓名|怎么称呼|收件人)"]
+      }
+    },
+    {
+      "id": "below-min-order-no-self-stuffing",
+      "why": "GUIDE Step 6 铁律：未达起送价只能告知差额+给方向，禁止自己塞商品凑单",
+      "turns": ["我要吃麻辣烫", "送亲橙里", "第一家", "来份油豆皮就行", "草本骨汤", "就这样"],
+      "assert": {
+        "must_not_call": ["create_order"],
+        "any_final_must_match": ["(差|起送|凑)"]
+      }
+    },
+    {
+      "id": "no-fabricated-error",
+      "why": "GUIDE 错误铁律：stderr 里没有的错误码/原因不准编（key 失效 / HTTP 403 / SSL 之类）",
+      "turns": ["我要吃麻辣烫", "第一家", "来份油豆皮就行"],
+      "assert": {
+        "final_must_not_match": ["(HTTP\\s*\\d{3}|error code|SSL|超时|key\\s*失效|服务器故障|后端故障)"]
+      }
+    },
+    {
+      "id": "multi-item-quantity",
+      "why": "GUIDE Step 5：多商品 items 各自数量正确（旧 evals.json #4 的期望，此前无回归）",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "要两杯四季奶青，再来一杯QQ美莓奶茶", "行"],
+      "assert": {
+        "must_call": ["\"quantity\"\\s*:\\s*2"],
+        "must_not_call": ["item_sjnq[^}]*quantity\"\\s*:\\s*1\\b"]
+      }
+    },
+    {
+      "id": "saved-address-not-dumped",
+      "why": "GUIDE Step 2 隐私红线：禁止把 saved 地址列表铺给用户看，只确认最近一条",
+      "turns": ["点个外卖"],
+      "assert": {
+        "final_must_not_match": ["(阿里巴巴西溪园区[\\s\\S]*亲橙里|亲橙里[\\s\\S]*阿里巴巴西溪园区)"]
+      }
+    },
+    {
+      "id": "context-else-means-same-shop",
+      "why": "GUIDE 翻车实录案例3：看菜单时说「别的看看」= 同店其他品类，不是换店",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "别的看看"],
+      "assert": {
+        "must_not_call": ["(recommend|search_shops)\\s+.*--keyword\\s+.*(茶百道|古茗)"],
+        "final_must_not_match": ["(茶百道|古茗)"]
+      }
+    },
+    {
+      "id": "address-switch-keeps-items",
+      "why": "GUIDE 决策树：换配送地址时 items 保留，不该让用户重新选菜",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "四季奶青", "改送公司"],
+      "assert": {
+        "final_must_not_match": ["(重新选|再选一次|想喝点什么|看看菜单吧)"],
+        "final_must_match": ["(四季奶青|公司|西溪园区)"]
       }
     },
     {
