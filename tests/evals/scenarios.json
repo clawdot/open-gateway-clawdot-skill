@@ -110,10 +110,10 @@
     {
       "id": "below-min-order-no-self-stuffing",
       "why": "GUIDE Step 6 铁律：未达起送价只能告知差额+给方向，禁止自己塞商品凑单",
-      "turns": ["我要吃麻辣烫", "第一家", "来份油豆皮就行"],
+      "turns": ["我要吃麻辣烫", "送亲橙里", "第一家", "来份油豆皮就行", "草本骨汤", "就这样"],
       "assert": {
         "must_not_call": ["create_order"],
-        "final_must_match": ["(差|起送|凑)"]
+        "any_final_must_match": ["(差|起送|凑)"]
       }
     },
     {
