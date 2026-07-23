@@ -115,10 +115,39 @@ TEA_MENU = {
     "total_items": 4,
 }
 
+# 真实规模的套餐（线上「55选11」实测形态：6 组 45 项，选项名带克重）——测大清单不截断
+_COMBO_GROUPS = {
+    "时蔬": ["小青菜(30g)+油麦菜(30g)", "娃娃菜(3片)+青笋片(20g)", "生菜(30g)+茼蒿(30g)",
+             "白菜(30g)+菠菜(30g)", "油麦菜(30g)+木耳(15g)", "青笋(20g)+海带(30g)",
+             "小白菜(30g)+平菇(20g)"],
+    "丸子": ["千叶豆腐(2片)+亲亲肠(2个)", "鱼豆腐(2块)+鹌鹑蛋(3个)", "蟹柳棒(2根)+撒尿丸(2个)",
+             "香菇贡丸(2个)+蟹肉棒(2根)", "鸡肉丸(2个)+甜不辣(2片)", "水晶包(2个)+鸡肉丸(2个)",
+             "墨鱼丸(2个)+虾饺(2个)", "牛肉丸(2个)+鱼籽包(2个)", "玉米肠(1根)+鱼豆腐(2块)",
+             "撒尿牛丸(2个)+蟹柳(2根)"],
+    "肉肉": ["腊肠(1段)+培根(2片)", "小酥肉(30g)+甜不辣(2片)", "午餐肉(2片)+火腿(2片)",
+             "鸭血(30g)+毛肚(20g)", "牛肉片(20g)+肥牛(20g)", "鸡胗(20g)+鸭肠(20g)",
+             "猪心片(20g)+黄喉(20g)"],
+    "热销": ["豆皮(30g)+娃娃菜(3片)", "金针菇(30g)+生菜(30g)", "土豆片(3片)+鸭血(30g)",
+             "腐竹(20g)+豆芽(30g)", "年糕片(3片)+莴笋(20g)", "宽粉(30g)+木耳(15g)",
+             "老豆腐(2块)+海带结(3个)", "杏鲍菇(20g)+青椒(20g)"],
+    "热销二": ["海带(30g)+素毛肚(3片)", "冬瓜(30g)+丝瓜(30g)", "藕片(3片)+年糕条(3根)",
+               "豆芽菜(30g)+娃娃菜(3片)", "脆豆芽(30g)+土豆片(3片)", "银耳(15g)+小青菜(30g)",
+               "魔芋结(3个)+竹笋(20g)", "西兰花(30g)+胡萝卜(20g)"],
+    "主食": ["非油炸方便面(1块)", "红薯宽粉(50g)", "龙口粉丝(50g)", "健康荞麦面(1份)",
+             "粗粮玉米面(1份)"],
+}
+COMBO_OPTIONS = [
+    {"option_id": f"opt_c{gi}_{oi}", "group_name": gname, "name": name,
+     "selected_by_default": oi == 0, "price": 0, "available": True}
+    for gi, (gname, names) in enumerate(_COMBO_GROUPS.items())
+    for oi, name in enumerate(names)
+]
+
 MLT_MENU = {
     "shop": {"shop_id": "shop_mlt1", "name": "郑恩强黏糊糊麻辣烫(仓前店)", "available": True},
     "categories": [{"name": "荤菜", "items": ["item_feiniu"]},
-                   {"name": "素菜", "items": ["item_kuanfen", "item_youdoupi"]}],
+                   {"name": "素菜", "items": ["item_kuanfen", "item_youdoupi"]},
+                   {"name": "套餐", "items": ["item_taocan"]}],
     "required_groups": [
         {"name": "必选好汤", "min_select": 1, "candidates": [
             {"item_id": "item_gutang", "name": "草本骨汤", "price": 300},
@@ -148,8 +177,10 @@ MLT_MENU = {
          ], "ingredient_options": []},
         {"item_id": "item_youdoupi", "name": "油豆皮", "price": 500, "category_name": "素菜",
          "sku_options": [], "ingredient_options": []},
+        {"item_id": "item_taocan", "name": "干饭人爆款升级套餐【55选11】", "price": 2780,
+         "category_name": "套餐", "sku_options": [], "ingredient_options": COMBO_OPTIONS},
     ],
-    "total_items": 3,
+    "total_items": 4,
 }
 
 PREVIEW = {

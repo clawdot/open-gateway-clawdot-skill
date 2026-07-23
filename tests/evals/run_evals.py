@@ -148,7 +148,44 @@ def check(sc: dict, run: dict) -> list[dict]:
     for pat, limit in a.get("max_calls", []):
         n = sum(1 for c in run["calls"] if re.search(pat, c))
         add(f"max_calls:{pat}<={limit}", n <= limit, f"实际 {n} 次")
+    if a.get("no_invented_options"):
+        invented = find_invented_options(final)
+        add("no_invented_options", not invented, "编造的选项: " + " | ".join(invented[:5]))
     return results
+
+
+def find_invented_options(text: str) -> list[str]:
+    """检出模型编造的选项名：把「组名（N选1）：a / b / c」行拆开，逐项比对 fixture 真值。
+
+    模型在"必须列全"的压力下会编选项（线上等价后果：用户挑了个不存在的规格，下单必炸）。
+    截断是少给信息，编造是给假信息——后者更危险，所以单独设这条硬断言。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mock_clawdot", MOCK)
+    mock = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mock)
+    real = {o["name"] for o in mock.COMBO_OPTIONS}
+    real |= {o["name"] for it in mock.MLT_MENU["items"] + mock.TEA_MENU["items"]
+             for o in (it.get("ingredient_options") or [])}
+    real |= {c["name"] for g in mock.MLT_MENU.get("required_groups", [])
+             for c in g["candidates"]}
+
+    # 允许模型省略克重/份数括号（"小青菜+油麦菜" vs "小青菜(30g)+油麦菜(30g)"）——那是精简不是编造；
+    # 归一化后仍对不上号的，才算凭空造出来的选项。
+    def norm(s: str) -> str:
+        return re.sub(r"[（(][^）)]*[）)]", "", s).replace(" ", "").strip()
+
+    real_norm = {norm(r) for r in real}
+    invented: list[str] = []
+    for line in text.splitlines():
+        m = re.match(r"^\**([一-龥]{2,6})\**（\d+选\d+）[：:](.+)$", line.strip())
+        if not m:
+            continue
+        for seg in m.group(2).split("/"):
+            seg = norm(seg.strip().strip("*"))
+            if seg and seg not in real_norm:
+                invented.append(seg)
+    return invented
 
 
 def main() -> int:
