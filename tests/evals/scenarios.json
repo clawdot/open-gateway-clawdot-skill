@@ -1,0 +1,101 @@
+{
+  "_comment": "行为回归用例。断言全部确定性（正则/调用序），不用 LLM 裁判。每条对应 GUIDE 里一条踩坑换来的规则——改 GUIDE 前后跑同一批，掉分就是退步。",
+  "scenarios": [
+    {
+      "id": "no-monologue",
+      "why": "GUIDE 总原则：绝不输出思考独白与元叙述（线上翻车：'拿到4家店了…让我按模板输出'）",
+      "turns": ["看看奶茶"],
+      "assert": {
+        "final_must_not_match": ["让我(按|先|来)", "我先分析", "拿到\\s*\\d+\\s*家", "属于.{0,6}时段", "按模板"]
+      }
+    },
+    {
+      "id": "address-before-shops",
+      "why": "GUIDE 坐标依赖：本会话未取地址时必须先 search_addresses 再搜店，否则落默认坐标搜错城",
+      "turns": ["我要吃麻辣烫"],
+      "assert": {
+        "must_call": ["search_addresses"],
+        "call_order": [["search_addresses", "(recommend|search_shops)"]]
+      }
+    },
+    {
+      "id": "vague-intent-no-tool",
+      "why": "GUIDE Step 1：模糊意图先给品类方向，不搜店（避免瞎推）",
+      "turns": ["吃饭"],
+      "assert": {
+        "must_not_call": ["recommend", "search_shops"],
+        "final_must_match": ["[🍔🍜🥣🍚🍲🥗🍗🍱]"]
+      }
+    },
+    {
+      "id": "spec-list-single",
+      "why": "GUIDE Step 4.5 规格清单格式：一组一行、默认标（推荐）、规格带价",
+      "turns": ["来杯奶茶", "第一家", "四季奶青"],
+      "assert": {
+        "final_must_match": ["（推荐）", "温度[：:]", "甜度[：:]", "¥\\s*\\d"],
+        "final_must_not_match": ["杯型有", "sku_", "opt_"]
+      }
+    },
+    {
+      "id": "spec-list-multi-required-group",
+      "why": "GUIDE：多商品一商品一块 + 店铺必选组同格式；整单只问一次",
+      "turns": ["我要吃麻辣烫", "第一家", "要肥牛卷、宽粉、油豆皮"],
+      "assert": {
+        "final_must_match": ["（推荐）", "辣度[：:]", "(必选|汤)"],
+        "final_must_not_match": ["item_", "opt_"]
+      }
+    },
+    {
+      "id": "batch-item-options",
+      "why": "GUIDE 性能：多商品规格用 get_item_options 一次取全，不逐个查菜单（省腿）",
+      "turns": ["我要吃麻辣烫", "第一家", "要肥牛卷、宽粉、油豆皮"],
+      "assert": {
+        "max_calls": [["get_shop_menu\\s+.*--item-id", 1]]
+      }
+    },
+    {
+      "id": "no-premature-order",
+      "why": "GUIDE 翻车实录案例0（P0）：选店≠选菜，必须先展菜单，禁止跳到下单",
+      "turns": ["来杯奶茶", "可以的"],
+      "assert": {
+        "must_call": ["get_shop_menu|recommend"],
+        "must_not_call": ["create_order", "preview_order"]
+      }
+    },
+    {
+      "id": "order-status-after-order",
+      "why": "GUIDE 决策树：本会话下过单后问'到哪了' → get_order_status，说人话不贴英文枚举",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "四季奶青", "行", "下单", "下单", "我的外卖到哪了"],
+      "assert": {
+        "must_call": ["get_order_status"],
+        "final_must_not_match": ["delivering", "pending_payment"]
+      }
+    },
+    {
+      "id": "order-status-no-context",
+      "why": "GUIDE 决策树兜底 + 反脑补铁律：会话里没 order_id 时问用户，禁止编造 order_id",
+      "turns": ["我的外卖到哪了"],
+      "assert": {
+        "must_not_call": ["get_order_status\\s+.*--order-id\\s+(ord_|order_)?[0-9a-zA-Z]"],
+        "final_must_match": ["[?？]"]
+      }
+    },
+    {
+      "id": "payment-link-never-dropped",
+      "why": "GUIDE Step 6：用户显式肯定就立刻 create_order，回复必带付款链接且禁止脱敏",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "四季奶青", "行", "下单", "下单"],
+      "assert": {
+        "must_call": ["create_order"],
+        "any_final_must_match": ["https://clawdot\\.example/pay/eval001"]
+      }
+    },
+    {
+      "id": "no-process-narration",
+      "why": "GUIDE 总原则：绝不播报过程（'帮你搜一下'/'先拿地址'）",
+      "turns": ["来杯奶茶"],
+      "assert": {
+        "final_must_not_match": ["帮你搜一下", "让我确认", "先拿地址", "正在搜索"]
+      }
+    }
+  ]
+}

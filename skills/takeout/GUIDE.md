@@ -333,7 +333,7 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 - 别自己替用户选。忘了选 → preview 会报 `MISSING_REQUIRED_SELECTION`，按 Step 5 的回收提示补。
 - 商品详情里若带 `min_purchase`（起购份数 >1）或 `available_quantity`（0=售罄、数字=余量），下单量要照着来、售罄的别推。
 
-### Step 4.5: 用户选了菜 → 确认规格（有 sku_options / ingredient_options 时）
+### Step 4.5: 用户点名商品 → **先**确认规格（有 sku_options / ingredient_options 就不能跳）
 
 ```
 用户选了商品 → 拿它们的 sku_options / ingredient_options：
@@ -419,7 +419,12 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 
 哪个要改说一声，都行的话我直接算价了</example>
 
-### Step 5: 用户选了菜 → Preview
+### Step 5: 规格已确认（或该商品无规格可选）→ Preview 试算
+
+**⚠️ 入口条件（先自查再调）**：本轮要下的每个商品，若菜单里带 `sku_options` 或
+`ingredient_options`，**必须已经走完 Step 4.5 把规格清单列给用户看过**。
+用户只说了菜名、还没见过规格清单就 preview = 替用户做主，等同案例 0 的越权。
+（商品无 sku_options 也无 ingredient_options → 跳过 4.5 直接来这步。）
 
 ```
 preview_order --shop-id --address-id --items '[...]' [--note "..."] → 拿到 preview_id + confirmation_token + 价格：
@@ -460,8 +465,10 @@ preview 之后只在用户**显式肯定**时才 create_order，"显式肯定" =
 任何**带问号的回复**、任何**离题回复**（问红包、问优惠、问别的菜）一律不算确认。先回答用户问题，**再问一次**"那就下单啦？"，等下一条消息再判断。
 
 ```
-用户显式确认 → create_order --preview-id <prv_> --confirmation-token <cf_>
+用户显式确认 → **立刻**调 create_order --preview-id <prv_> --confirmation-token <cf_>
   （两个值都来自上一步 preview 的返回；confirmation_token 一次性消费）
+  ⚠️ 手里已有 preview_id + confirmation_token 且用户说了"好/行/下单"→ 这一轮就必须发 create_order。
+     ❌ 禁止再把 preview 摘要复述一遍当回复、❌ 禁止再问一次"确认吗"、❌ 禁止重新 preview（除非商品有变）。
 回复必带 payment_link 作为可点击链接展示。
 绝对不能省略付款链接，禁止脱敏（jwt 参数或 https://clawdot.* 短链都原样保留）。
 
