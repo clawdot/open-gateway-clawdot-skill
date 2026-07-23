@@ -66,7 +66,7 @@
 **场景 A：连 `API_KEY` 都没配** → 任何调用返回 `RECOVERY[API_KEY_MISSING]`，按顺序做三件事：
 
 1. 把注册链接发给用户："先打开这个链接登录/注册 ClawDot，把页面里的 API_KEY 发给我～"（链接在脚本 stderr 里，原样转发）
-2. 用户发来 key → 写入 skill 根目录 `.env`（`API_KEY=<key>`，`GATEWAY_MCP_URL` 没配也一并写）。**不要复述、不要展示 key**
+2. 用户发来 key → 写入 skill 根目录 `.env`（`API_KEY=<key>`；`GATEWAY_MCP_URL` 一并写时**必须原样抄 stderr 给出的那行地址，禁止自己编 URL**）。**不要复述、不要展示 key**
 3. 接着进入场景 B 的一步式提问
 
 **场景 B：有 `API_KEY`，还没绑定用户** → 业务调用返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`。绑定有两种方式：
@@ -135,11 +135,12 @@
 
 模糊意图（吃饭/饿了/随便/推荐/点外卖/不知道吃啥/吃点啥）
   → 不调工具，直接给 2-3 个品类方向，等用户选
-  → 同时并行调 search_addresses（无参）拿地址
+  → 同一轮并行调 search_addresses（无参）拿地址（不搜店，不受下面的坐标顺序限制）
 
 具体品类（麻辣烫/汉堡/奶茶/咖啡/烧烤/轻食/粥/炸鸡...）
   → recommend --keyword "品类" --top-n 4
-  → 同时并行调 search_addresses（无参）拿地址
+  → ⚠️ 本会话**还没拿过地址** → 先单发 search_addresses，拿到坐标再 recommend（见下）
+     本会话**已拿过地址/已选地址** → 两个可以同一轮并行发（坐标已在本地，recommend 直接命中）
 
 品牌名（塔斯汀/瑞幸/喜茶/肯德基/麦当劳...）
   → recommend --keyword "品牌" --top-n 4
@@ -168,7 +169,7 @@
 想吃哪个方向？没想法我帮你推几家热门的
 </example>
 
-### Step 2: 定位（与 Step 1 并行）
+### Step 2: 定位（首次搜店前必须先做完）
 
 ```
 search_addresses（无参）返回 → 判断：
@@ -327,19 +328,22 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
 有些店（麻辣烫、部分套餐店）**整单必须再点一类商品**才能下单。get_shop_menu 概览返回 `required_groups[]` 时：
 
 - 每组给了 `name`（如「必选好汤」）、`min_select`（选几个）、`candidates`（可选的汤/主食，带名称/价格）。
-- 展菜单时**顺带把这组亮出来让用户挑**（"这家要配个汤底，草本骨汤还是番茄汤？"），选中的 candidate 当普通商品一起进 items[]。
+- 展菜单时**顺带把这组亮出来让用户挑**，用 Step 4.5 的规格清单格式（一组一行、带价、默认标（推荐）），
+  例如 `必选好汤：草本骨汤 ¥3（推荐）/ 番茄汤 ¥4 / 咖喱汤 ¥4`；选中的 candidate 当普通商品一起进 items[]。
 - 别自己替用户选。忘了选 → preview 会报 `MISSING_REQUIRED_SELECTION`，按 Step 5 的回收提示补。
 - 商品详情里若带 `min_purchase`（起购份数 >1）或 `available_quantity`（0=售罄、数字=余量），下单量要照着来、售罄的别推。
 
 ### Step 4.5: 用户选了菜 → 确认规格（有 sku_options / ingredient_options 时）
 
 ```
-用户选了一个商品（"来杯杨枝甘露"）→ get_shop_menu --shop-id --item-id 拿商品详情，看 sku_options / ingredient_options。
-（菜单概览/分类/菜名搜索已含每项详情；--item-id 拿单品完整结构最稳妥。）
+用户选了商品 → 拿它们的 sku_options / ingredient_options：
+  单个商品 → get_shop_menu --shop-id --item-id <item_>
+  多个商品（麻辣烫选一堆菜、点了三四样）→ get_item_options --shop-id --items '[{"item_id":"item_a"},{"item_id":"item_b"}]'
+    ⚠️ 一次拿全，**不要**每个商品单独调一次 menu（多商品逐个查=白等好几轮）
+（菜单概览/分类/菜名搜索已含每项详情；上面两个命令拿到的单品结构最完整。）
 
 无 sku_options、无 ingredient_options → 跳过，直接进 Step 5 preview_order
-有其一 → 告知当前默认选择 + 列出可改的选项：
-  "杨枝甘露，先按大杯少糖给你选的。杯型有大杯/中杯，甜度有少糖/全糖/不加糖。要调直接说~"
+有其一 → 按下面的**规格清单格式**告知默认选择 + 列出可改的选项（不要写成一句散文）
 
 两类可选项，下单时映射到不同字段：
   - `sku_options[]`：规格/份量/杯型（互斥单选）。每项带 `sku_id`、`name`、`price`、`specs`。
@@ -361,6 +365,60 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
   - 汉堡/炒饭等无 sku_options 无 ingredient_options 的品类 → 不走这步，不问
 ```
 
+#### 📋 规格清单格式（有 sku_options / ingredient_options 时**必须**用这个形态）
+
+**一组一行的清单，不写成散文句**。用户扫一眼就知道有哪些选项、当前默认是什么。
+
+```
+{一句话过渡（商品名 + 已按默认选好）}
+🥤 {sku1名} ¥{价} | {sku2名} ¥{价}
+{组名}：{默认项}（推荐）/ {选项2} / {选项3}
+{组名}：{默认项}（推荐）/ {选项2} / {选项3}
+{一句"要调直接说 / 就这样下单"的开放收尾}
+```
+
+格式规则：
+- **规格（sku_options）单独一行**、带 emoji，各规格间用 ` | ` 分隔，**每个都带价格**（多规格就是多价格，用户要比价）
+- **每个属性组（ingredient_options 的 group_name）各占一行**，`组名：` 开头，组内选项用 ` / ` 分隔
+- **默认项标 `（推荐）`**，且排在该行第一位；加价项在选项后标 `+¥X`（如 `珍珠 +¥2`），不加价的不标
+- 组名用菜单返回的原文（温度/甜度/加料/辣度…），不要自己改名或合并两组
+- 每组的选项**列全**，不裁剪（用户看不到饿了么界面）；`available=false` 的选项不列
+- ❌ 禁止散文式罗列（"杯型有大杯/中杯，甜度有少糖/全糖"）
+- ❌ 禁止展示 sku_id / option_id 等内部 id
+
+<example label="选了商品 → 列规格清单">
+用户：来杯四季奶青
+
+助手：四季奶青，先按大杯少冰七分糖给你选好了～
+🥤 中杯 ¥19 | 大杯 ¥22
+温度：少冰（推荐）/ 去冰 / 热
+甜度：七分糖（推荐）/ 全糖 / 五分糖 / 三分糖 / 不加糖
+要调直接说，不改的话我就这么下单了
+</example>
+
+**多商品（麻辣烫/多杯多份）**：一个商品一个小块，商品名单独一行加粗，块之间空一行；
+店铺必选组（锅底/汤底这类整单必选）放最后一块。整单只问一次，别一个商品问一轮。
+
+<example label="麻辣烫多商品 → 规格清单">
+用户：要肥牛、宽粉、油豆皮
+
+助手：三样都加好了，规格先按默认给你选的～
+
+**肥牛卷**
+辣度：微辣（推荐）/ 不辣 / 中辣 / 变态辣
+麻度：微麻（推荐）/ 不麻 / 重麻
+
+**宽粉**
+份量：小份 ¥6（推荐）/ 大份 ¥10
+
+**油豆皮**
+（无可选项）
+
+**必选好汤**（这家整单要配一个）
+草本骨汤 ¥3（推荐）/ 番茄汤 ¥4 / 咖喱汤 ¥4
+
+哪个要改说一声，都行的话我直接算价了</example>
+
 ### Step 5: 用户选了菜 → Preview
 
 ```
@@ -380,8 +438,9 @@ items JSON 用 open-gateway 形态（id 全部来自当前店 menu 输出）：
 - `RECOVERY[REFERENCE_STALE]`（PUBLIC_REFERENCE_INVALID）→ shop_id / item_id / sku_id / cart 已过期：
   重新 search/recommend 拿新 shop_id，再 get_shop_menu --shop-id 拿新 item_id / sku_id / option_id，然后重 preview_order。**禁止跨店复用 id、禁止把中文菜名当 item_id。**
 - `RECOVERY[SHOP_CART_MISS]` → 这家店还没搜过（或上下文过期）：先 search_shops --keyword '<店名/品类>'（或 recommend），再用返回的 shop_id 重试。
-- `RECOVERY[MUST_PICK_REQUIRED]` → 网关要求加必选项（**商品内部**的加料必选组）：get_shop_menu --shop-id --item-id 看 ingredient_options 的必选组（group_name），把用户选中项的 option_id 收进 items[].ingredient_option_ids 重 preview_order。偏好类（锅底/糖度/温度/辣度）**列给用户选，禁止替用户做主**。
-- `RECOVERY[MISSING_REQUIRED_SELECTION]` → **店铺级必选组**（整单必须再点一个商品，如麻辣烫「必选好汤」，和上面的商品内部必选组是两回事）：get_shop_menu --shop-id 看返回的 `required_groups[]`，从每组 `candidates` 里按 `min_select` 选够，作为普通商品加进 items[] 重 preview_order。**列给用户选，别替用户做主。**
+- `RECOVERY[MUST_PICK_REQUIRED]` → 网关要求加必选项（**商品内部**的加料必选组）：get_shop_menu --shop-id --item-id（多商品用 get_item_options）看 ingredient_options 的必选组（group_name），把用户选中项的 option_id 收进 items[].ingredient_option_ids 重 preview_order。偏好类（锅底/糖度/温度/辣度）**用 Step 4.5 的规格清单格式列给用户选，禁止替用户做主**。
+- `RECOVERY[MISSING_REQUIRED_SELECTION]` → **店铺级必选组**（整单必须再点一个商品，如麻辣烫「必选好汤」，和上面的商品内部必选组是两回事）：get_shop_menu --shop-id 看返回的 `required_groups[]`，从每组 `candidates` 里按 `min_select` 选够，作为普通商品加进 items[] 重 preview_order。**同样用规格清单格式列给用户选（一组一行、带价、默认标（推荐）），别替用户做主。**
+- `RECOVERY[BELOW_MIN_ORDER]` → **整单**没到店铺起送价（≠ 单品起购份数）：告诉用户差多少、给 1-2 个低价单品选项（"差 ¥5 起送，加杯豆浆或小食？"），**让用户点头再加，禁止自己塞商品凑单**。
 - `RECOVERY[BELOW_MIN_PURCHASE]` → 某商品**起购份数**没达标（≠ 整单未达起送价）：把该商品的 quantity 提到菜单详情里的 `min_purchase` 及以上重 preview_order，或让用户换个无起购限制的商品。加量/加钱先跟用户说一声。
 
 **Preview 输出模板**（一段话，不用小票格式）：
@@ -457,6 +516,14 @@ preview 之后只在用户**显式肯定**时才 create_order，"显式肯定" =
 
 用户说"算了"
   → "好"。不追问不劝。
+
+用户问"订单到哪了/送到没/骑手接单没/查下订单"
+  → get_order_status --order-id <本会话下单返回的 order_id>
+  → 用一句话说状态 + 预计时间（"骑手取到餐了，预计 12:40 送到"），别把状态英文枚举贴给用户
+  → 会话里没有 order_id（比如换了会话）→ 问用户是不是刚在这儿下的单，没有就说要去饿了么 App 里看
+
+用户说"解绑/取消授权/换个账号"
+  → revoke_user_bind（多用户带 --phone），见 Step 0
 ```
 
 ---
@@ -472,7 +539,10 @@ preview 之后只在用户**显式肯定**时才 create_order，"显式肯定" =
 ## 并行 & 性能规则
 
 - 不互相依赖的 tool call **必须同一轮发出**
-- ⚠️ `search_addresses` 和 `recommend` **不能并行**：`recommend` 必须带用户实际坐标，否则可能搜到 `DEFAULT_LAT/LNG` 附近的店。先 addresses 拿到坐标，再 recommend
+- ⚠️ **`recommend` / `search_shops` 的坐标依赖**（本会话第一次搜店必看）：搜店坐标取自本地地址缓存，
+  缓存为空时会落到 `DEFAULT_LAT/LNG`（搜出错城的店）。所以：
+  - **本会话还没调过 `search_addresses`（或用户刚换地址）** → 先单发 `search_addresses`，拿到坐标再搜店，**这一轮不要并行**
+  - **已经调过 / 已 select_address** → 坐标已在本地，搜店与其他调用**可以并行**，别多等一轮
 - 单轮 tool call ≤ 8
 - `search_addresses`（无参）session 内只调一次
 - `get_shop_menu --shop-id` 拿分类概览；`--category` / `--keyword` 缩小范围；`--item-id` 拿单品完整规格（sku_options/ingredient_options）

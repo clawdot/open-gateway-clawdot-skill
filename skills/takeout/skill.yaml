@@ -4,7 +4,7 @@ description: >
   通过 ClawDot open-gateway 外卖网关帮用户点外卖（MCP 传输：CLI 每个子命令
   = 一次 JSON-RPC tools/call）。支持搜店、选菜、下单、查单全流程；
   鉴权：API_KEY（agent）+ 用户 SMS/H5 绑定拿 consent_grant（共享缓存持久化）。
-version: 2.1.1
+version: 2.1.2
 license: MIT
 author: clawdot
 
