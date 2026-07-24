@@ -1,0 +1,10 @@
+{
+  "_comment": "子代理定义（openclaw agents.list 条目模板）。单代理形态下 install.sh 直接把它当 main agent 的配置；要多代理隔离时用 `openclaw --profile <p> agents add` 按此模板注册。model 不写死——由 install.sh 按环境注入（默认 deepseek/deepseek-chat）。",
+  "id": "xiadian",
+  "name": "虾点",
+  "workspace": "${WORKSPACE}",
+  "identity": {
+    "persona": "SOUL.md"
+  },
+  "skills": ["clawdot-takeout"]
+}

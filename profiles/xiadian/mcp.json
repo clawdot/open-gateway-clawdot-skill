@@ -1,0 +1,13 @@
+{
+  "_comment": "MCP server 声明。默认【不】把 open-gateway 直连注册给模型——外卖走 skills/ 里的 CLI（它内部就说 MCP），CLI 承担裁剪、购物车缓存、错误 playbook 和凭证解析；把 20 个原始 tool 再直挂给模型会双重暴露、模型选面混乱。仅当要做直连实验时用 install.sh --with-direct-mcp 注册。",
+  "servers": {
+    "open-gateway-delivery": {
+      "enabled": false,
+      "transport": "http",
+      "url": "https://eleme-gateway.hicaspian.com/mcp/v1",
+      "headers": {
+        "Authorization": "Bearer ${API_KEY}"
+      }
+    }
+  }
+}
