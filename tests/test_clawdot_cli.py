@@ -605,6 +605,13 @@ def test_revoke_user_bind() -> None:
     check("rev.dead_cleared", creds.get("13800008888") is None, str(creds.all()))
 
 
+def test_auth_invalid_carries_setup_url() -> None:
+    """API_KEY 无效的引导必须自带注册页 URL——否则禁编造铁律下模型无处引导（线上真实卡死案例）。"""
+    msg = clawdot.friendly_error(clawdot.GatewayError(401, "AUTH_INVALID", "unauthorized"))
+    check("authurl.tag", "RECOVERY[API_KEY_INVALID]" in msg, msg)
+    check("authurl.url", clawdot.DEFAULT_SETUP_URL in msg, msg)
+
+
 def test_verify_bind_env_shadow_warning() -> None:
     gw = clawdot.MCPClient(_CFG)
     payload = {"bound": True, "consent_grant_id": "cg_new",
@@ -638,6 +645,7 @@ def main() -> int:
         test_verify_bind_writes_shared_cache,
         test_cred_store_delete,
         test_revoke_user_bind,
+        test_auth_invalid_carries_setup_url,
         test_verify_bind_env_shadow_warning,
     ]
     for t in tests:

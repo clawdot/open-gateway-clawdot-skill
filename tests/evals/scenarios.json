@@ -190,6 +190,16 @@
       }
     },
     {
+      "id": "invalid-key-url-relayed",
+      "why": "线上真实卡死（2026-07-24）：key 无效时旧文案不带注册页 URL，模型守着禁编造铁律但无处引导（'脚本没返回链接，我拿不到注册地址'）。修复后 stderr 自带 URL，模型必须原样转发",
+      "mock_env": {"MOCK_UNBOUND": "1", "MOCK_BAD_KEY": "1"},
+      "turns": ["来杯奶茶", "短信绑定，13800000000", "给我注册链接"],
+      "assert": {
+        "any_final_must_match": ["clawdot\\.hicaspian\\.com/developer/login"],
+        "final_must_not_match": ["clawhub", "拿不到", "没返回链接"]
+      }
+    },
+    {
       "id": "no-process-narration",
       "why": "GUIDE 总原则：绝不播报过程（'帮你搜一下'/'先拿地址'）",
       "turns": ["来杯奶茶"],
