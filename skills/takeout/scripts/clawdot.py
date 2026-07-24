@@ -18,6 +18,7 @@ from urllib.error import HTTPError, URLError
 # ── Config ──────────────────────────────────────────────────────────────────
 
 DEFAULT_MCP_URL = "https://eleme-gateway.hicaspian.com/mcp/v1"
+DEFAULT_SETUP_URL = "https://clawdot.hicaspian.com/developer/login"
 
 
 @dataclass
@@ -80,10 +81,7 @@ def load_config() -> Config:
         mcp_url=normalize_mcp_url(os.environ.get("GATEWAY_MCP_URL", DEFAULT_MCP_URL)),
         api_key=os.environ.get("API_KEY", ""),
         consent_grant_id=os.environ.get("CONSENT_GRANT_ID", ""),
-        setup_url=os.environ.get(
-            "CLAWDOT_SETUP_URL",
-            "https://clawdot.hicaspian.com/developer/login",
-        ),
+        setup_url=os.environ.get("CLAWDOT_SETUP_URL", DEFAULT_SETUP_URL),
         default_lat=to_float("DEFAULT_LAT"),
         default_lng=to_float("DEFAULT_LNG"),
         timeout_ms=int(os.environ.get("TIMEOUT_MS", "30000")),
@@ -909,9 +907,12 @@ def friendly_error(err: GatewayError, ctx: dict | None = None) -> str:
             return f"{user_msg}\nRECOVERY[USER_NOT_BOUND_NEEDS_SMS]: {_format_recovery(hint, ctx)}"
 
     if err.code in ("AUTH_REQUIRED", "AUTH_INVALID"):
+        # 注册页 URL 必须随错误一起给出——否则模型无处可引导（禁编造铁律下它只能卡死）。
+        setup_url = os.environ.get("CLAWDOT_SETUP_URL", DEFAULT_SETUP_URL)
         return ("API_KEY 无效或缺失。\n"
                 "RECOVERY[API_KEY_INVALID]: 检查/更换 .env 里的 API_KEY（clw_）；"
-                "还没有 key 就按注册页引导用户获取后写入 .env。")
+                f"还没有 key 就把注册页原样发给用户去获取：{setup_url} "
+                "（拿到后写入 .env，不要复述展示 key）。")
 
     haystack = f"{err.code} {err.args[0] if err.args else ''}"
     matched = _lookup_by_pattern(haystack)
