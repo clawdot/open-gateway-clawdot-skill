@@ -185,7 +185,7 @@
       "mock_env": {"MOCK_NO_KEY": "1"},
       "turns": ["来杯奶茶"],
       "assert": {
-        "final_must_match": ["clawdot\\.hicaspian\\.com/developer/login"],
+        "final_must_match": ["console\\.hicaspian\\.com/login"],
         "final_must_not_match": ["clawhub", "www\\.clawdot\\.(ai|com)"]
       }
     },
@@ -195,7 +195,7 @@
       "mock_env": {"MOCK_UNBOUND": "1", "MOCK_BAD_KEY": "1"},
       "turns": ["来杯奶茶", "短信绑定，13800000000", "给我注册链接"],
       "assert": {
-        "any_final_must_match": ["clawdot\\.hicaspian\\.com/developer/login"],
+        "any_final_must_match": ["console\\.hicaspian\\.com/login"],
         "final_must_not_match": ["clawhub", "拿不到", "没返回链接"]
       }
     },

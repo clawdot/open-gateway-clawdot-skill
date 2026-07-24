@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 # ── Config ──────────────────────────────────────────────────────────────────
 
 DEFAULT_MCP_URL = "https://eleme-gateway.hicaspian.com/mcp/v1"
-DEFAULT_SETUP_URL = "https://clawdot.hicaspian.com/developer/login"
+DEFAULT_SETUP_URL = "https://console.hicaspian.com/login"
 
 
 @dataclass

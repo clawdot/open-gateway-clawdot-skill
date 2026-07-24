@@ -212,7 +212,7 @@ def main() -> None:
     bind_cmds = {"request_user_bind", "verify_user_bind", "revoke_user_bind"}
     if os.environ.get("MOCK_NO_KEY") == "1":
         die("还没配置外卖服务的 API_KEY。\n"
-            "让用户打开 https://clawdot.hicaspian.com/developer/login 登录/注册 ClawDot "
+            "让用户打开 https://console.hicaspian.com/login 登录/注册 ClawDot "
             "拿到 API_KEY，原文发回来；收到后写入本 skill 根目录 .env。不要复述或展示 key。\n"
             "RECOVERY[API_KEY_MISSING]: ① 把注册链接发给用户等 key → ② 写入 .env → "
             "③ 一句话问齐：'先告诉我手机号，顺便选一下用 H5 还是验证码方式绑定哦～'")
@@ -220,7 +220,7 @@ def main() -> None:
         # 无效 key 在第一次真实出网（bind）时暴露——文案照抄真 CLI friendly_error（v2.2.2 起带 URL）
         die("发送验证码失败：API_KEY 无效或缺失。\n"
             "RECOVERY[API_KEY_INVALID]: 检查/更换 .env 里的 API_KEY（clw_）；"
-            "还没有 key 就把注册页原样发给用户去获取：https://clawdot.hicaspian.com/developer/login "
+            "还没有 key 就把注册页原样发给用户去获取：https://console.hicaspian.com/login "
             "（拿到后写入 .env，不要复述展示 key）。")
     if os.environ.get("MOCK_UNBOUND") == "1" and cmd not in bind_cmds:
         die("还没绑定用户。先问用户选哪种授权方式：短信验证码（默认）或打开链接授权（H5）；用户不选就走短信。\n"
