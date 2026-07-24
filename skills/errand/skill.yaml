@@ -1,0 +1,78 @@
+name: errand
+display_name: ClawDot 跑腿助手
+description: >
+  通过 ClawDot open-gateway 跑腿网关帮用户叫同城跑腿（MCP 传输：CLI 每个子命令
+  = 一次 JSON-RPC tools/call）。帮取送——认收发地址（地址簿/POI 搜索/存址复用）→
+  多运力比价 → 下单拿付款链接 → 跟进配送/加小费/取消。
+  鉴权：API_KEY（agent）+ 用户短信绑定拿 consent_grant（能力分格共享缓存持久化）。
+  只做「点到点送东西」，点外卖走外卖技能，代购帮买暂不支持。
+version: 1.1.0
+license: MIT
+author: clawdot
+
+category: life-services
+tags: [errand, courier, delivery, same-city, 跑腿, 闪送]
+locale: zh-CN
+
+# 鉴权一条线：只需注入 API_KEY（agent，须已开通 errand 能力）；用户走一次短信绑定拿
+# cg（=一个用户），verify 成功后写入【能力分格】共享凭证缓存
+# （~/.clawdot/errand-credentials.json，按 API_KEY+手机号键控，可用 CLAWDOT_HOME 重定向）。
+# 跑腿授权与外卖独立、consent 分能力发放互不通用：同号两条线各绑一次、各存各的文件、不互踢。
+# 多用户：一个 api_key 服务多个用户，各自绑定、调用带 --phone 指定。
+# open-gateway 无 admin 静默绑定。
+auth_model: user_binding_sms_with_shared_cache
+
+requires:
+  bins: [python3]
+  env:
+    - name: GATEWAY_MCP_URL
+      description: ClawDot 跑腿网关 MCP 端点（默认 https://paotui.hicaspian.com/mcp/v1；接受 origin，自动补 /mcp/v1）
+      optional: true
+    - name: API_KEY
+      description: ClawDot open-gateway API 密钥（clw_，须已开通 errand 能力；未配置时返回 RECOVERY[API_KEY_MISSING] 引导去注册页获取）
+      optional: true
+    - name: CONSENT_GRANT_ID
+      description: 用户授权凭证（cg_，=一个用户）的只读预注入项（无状态部署跳过绑定用）；正常流程绑定后写入共享缓存，无需配置本项
+      optional: true
+    - name: CLAWDOT_HOME
+      description: 共享凭证缓存目录（默认 ~/.clawdot；容器/多租户部署可重定向）
+      optional: true
+    - name: CLAWDOT_SETUP_URL
+      description: API_KEY 缺失时引导用户注册/登录的页面地址（默认 ClawDot developer 登录页）
+      optional: true
+
+entry_point: scripts/errand.py
+
+# 子命令 1:1 对应网关 MCP tool 名（内部映射到 errand_* 工具）。
+actions:
+  - name: request_user_bind
+    description: 用户绑定第 1 步：发短信验证码（跑腿仅短信模式），返回 bind_id
+  - name: verify_user_bind
+    description: 用户绑定第 2 步：核验验证码，成功后写共享凭证缓存
+  - name: list_addresses
+    description: 列该手机号名下地址簿（选收发地址）
+  - name: search_addresses
+    description: POI 关键词搜地点，候选列给用户挑（不自动取第一个）
+  - name: save_address
+    description: 把用户选中的地址（可带门牌/联系电话）存进地址簿，下次下单不必再问
+  - name: list_orders
+    description: 近几单历史，支持"还是上次那样"复用收发/物品
+  - name: quote
+    description: 询价：多运力报价 + quote_id（费用/距离）；支持预约送达、专人直送、保价
+  - name: create
+    description: 核销 quote_id + 选定运力下单，返回付款链接（客户自己点开付款）
+  - name: get_order
+    description: 查订单状态/时间线/骑手
+  - name: get_rider
+    description: 骑手实时位置（配送中）
+  - name: pre_cancel
+    description: 取消前查违约金/可退金额
+  - name: cancel
+    description: 取消订单（已付按 实付−违约金 退）
+  - name: add_tip
+    description: 加小费催单，返回独立付款链接
+
+platforms:
+  - claude-code
+  - openclaw
+  - codex
