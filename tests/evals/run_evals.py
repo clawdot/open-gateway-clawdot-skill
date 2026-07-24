@@ -56,6 +56,9 @@ def chat(messages: list[dict], api_key: str) -> dict:
         return json.loads(resp.read())["choices"][0]["message"]
 
 
+_MOCK_ENV: dict[str, str] = {}  # per-scenario 注入给 mock 的状态开关（见 scenarios 的 mock_env）
+
+
 def run_command(command: str) -> tuple[str, str, int]:
     """把模型发出的命令重定向到 mock CLI 后执行（保留原命令供断言）。
 
@@ -65,9 +68,11 @@ def run_command(command: str) -> tuple[str, str, int]:
     if "clawdot.py" not in command:
         return "", "eval sandbox：本环境只允许调用 skill 脚本（scripts/clawdot.py）。", 127
     redirected = re.sub(r"\S*clawdot\.py", str(MOCK), command)
+    env = dict(os.environ)
+    env.update(_MOCK_ENV)
     try:
         proc = subprocess.run(redirected, shell=True, capture_output=True, text=True,
-                              timeout=30, cwd=str(HERE))
+                              timeout=30, cwd=str(HERE), env=env)
     except subprocess.TimeoutExpired:
         return "", "命令超时", 124
     return proc.stdout[:4000], proc.stderr[:2000], proc.returncode
@@ -87,6 +92,8 @@ ENV_BLOCK = f"""
 
 
 def run_scenario(sc: dict, system_prompt: str, api_key: str) -> dict:
+    global _MOCK_ENV
+    _MOCK_ENV = dict(sc.get("mock_env") or {})
     messages = [{"role": "system", "content": system_prompt}]
     calls: list[str] = []
     finals: list[str] = []

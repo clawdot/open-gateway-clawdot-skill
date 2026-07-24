@@ -41,6 +41,7 @@
 |---|---|---|
 | "API 返回 HTTP 403 (error code: 1010)" | gateway 没这个 code，纯幻觉 | code 是字符串，没数字 1010 |
 | "API key 失效，请申请新的" | 实际是 CONSENT_GRANT 过期 | 看 stderr 真实文案，别瞎换 |
+| "API_KEY 不对，重新弄一个：clawhub.ai/developers" | 实际是**还没绑定用户**（stderr 是绑定引导），链接也是编的 | 未绑定 ≠ key 问题；**链接只能原样抄 stderr，禁止编任何域名** |
 | "发送 SMS 撞 SSL 问题" | 脚本明明 200 成功 | 没看 stdout 直接编 |
 | `verify_user_bind --code 123456` | 用户根本没输码 | 验证码必须从用户消息原文提取 |
 
@@ -66,11 +67,12 @@
 
 **场景 A：连 `API_KEY` 都没配** → 任何调用返回 `RECOVERY[API_KEY_MISSING]`，按顺序做三件事：
 
-1. 把注册链接发给用户："先打开这个链接登录/注册 ClawDot，把页面里的 API_KEY 发给我～"（链接在脚本 stderr 里，原样转发）
+1. 把注册链接发给用户："先打开这个链接登录/注册 ClawDot，把页面里的 API_KEY 发给我～"（**链接只能是 stderr 里给的那一个，原样转发，禁止自己编或"记忆中的"任何域名**）
 2. 用户发来 key → 写入 skill 根目录 `.env`（`API_KEY=<key>`；`GATEWAY_MCP_URL` 一并写时**必须原样抄 stderr 给出的那行地址，禁止自己编 URL**）。**不要复述、不要展示 key**
 3. 接着进入场景 B 的一步式提问
 
-**场景 B：有 `API_KEY`，还没绑定用户** → 业务调用返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`。绑定有两种方式：
+**场景 B：有 `API_KEY`，还没绑定用户** → 业务调用返回 `RECOVERY[USER_NOT_BOUND_NEEDS_SMS]`。
+⚠️ **这不是 key 的问题**——禁止说"API_KEY 不对/失效/重新弄一个"、禁止发任何注册链接，直接进绑定引导。绑定有两种方式：
 
 | 方式 | 适合场景 | 用户要做什么 |
 |---|---|---|
