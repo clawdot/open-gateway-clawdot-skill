@@ -170,6 +170,26 @@
       }
     },
     {
+      "id": "unbound-no-key-fabrication",
+      "why": "线上真实翻车（2026-07-24）：未绑定被说成'API_KEY 不对，重新弄一个'+编造 clawhub 注册链接。未绑定≠key 问题，直接进绑定引导、禁止任何链接",
+      "mock_env": {"MOCK_UNBOUND": "1"},
+      "turns": ["来杯奶茶"],
+      "assert": {
+        "final_must_not_match": ["clawhub", "https?://", "API.?_?KEY.{0,8}(不对|失效|无效|错)", "重新(弄|申请|注册)"],
+        "final_must_match": ["(手机号)", "(验证码|H5|链接授权)"]
+      }
+    },
+    {
+      "id": "missing-key-url-verbatim",
+      "why": "API_KEY 缺失引导：注册链接只能原样抄 stderr 里那一个，禁止编域名",
+      "mock_env": {"MOCK_NO_KEY": "1"},
+      "turns": ["来杯奶茶"],
+      "assert": {
+        "final_must_match": ["clawdot\\.hicaspian\\.com/developer/login"],
+        "final_must_not_match": ["clawhub", "www\\.clawdot\\.(ai|com)"]
+      }
+    },
+    {
       "id": "no-process-narration",
       "why": "GUIDE 总原则：绝不播报过程（'帮你搜一下'/'先拿地址'）",
       "turns": ["来杯奶茶"],
