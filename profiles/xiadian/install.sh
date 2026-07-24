@@ -81,12 +81,18 @@ else
   echo "   跳过（无 DEEPSEEK_API_KEY；请自行配置模型）"
 fi
 
-echo "==> 4/6 安装 takeout skill（GitHub release latest）"
+echo "==> 4/6 安装 takeout skill"
 SKILL_DIR="$ROOT/workspace/skills/clawdot-takeout"
 mkdir -p "$SKILL_DIR"
-ASSET_URL="$(curl -fsSL https://api.github.com/repos/clawdot/open-gateway-clawdot-skill/releases/latest \
-  | python3 -c 'import json,sys;print([a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if "openclaw" in a["name"]][0])')"
-curl -fsSL "$ASSET_URL" | tar xz -C "$SKILL_DIR"
+if [ -f "$HERE/skills/clawdot-takeout/skill.yaml" ]; then
+  echo "   使用包内内置 skill（自包含，离线可装）"
+  cp -R "$HERE/skills/clawdot-takeout/." "$SKILL_DIR/"
+else
+  echo "   包内无内置 skill，从 GitHub release latest 拉取"
+  ASSET_URL="$(curl -fsSL https://api.github.com/repos/clawdot/open-gateway-clawdot-skill/releases/latest \
+    | python3 -c 'import json,sys;print([a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if "openclaw" in a["name"]][0])')"
+  curl -fsSL "$ASSET_URL" | tar xz -C "$SKILL_DIR"
+fi
 {
   echo "GATEWAY_MCP_URL=$GATEWAY_MCP_URL"
   echo "API_KEY=$API_KEY"
