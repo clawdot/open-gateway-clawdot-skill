@@ -510,6 +510,10 @@ def trim_search_results(raw: dict) -> dict:
     result: dict = {"shops": shops, "count": len(shops)}
     if raw.get("next_offset") is not None:
         result["next_offset"] = raw["next_offset"]
+    # search_match_level（doc v3.0）：exact=命中目标；related=没找到、返回的是同类推荐店。
+    # 透出让 agent 别把 related 当成"搜到了这家品牌"。
+    if raw.get("search_match_level"):
+        result["search_match_level"] = raw["search_match_level"]
     return result
 
 
@@ -663,6 +667,9 @@ def build_item_detail(item: dict) -> dict:
         detail["ingredient_hint"] = (
             "加料/属性：把用户选中项的 option_id 放进下单 items[].ingredient_option_ids；"
             "selected_by_default=true 的是默认项。"
+            "带 max_quantity>1 或 price_steps 的份数型加料（如浓缩 x3）改用 "
+            "items[].ingredient_quantities=[{option_id,quantity}]，别再列进 ingredient_option_ids；"
+            "份数价看 price_steps 分档，不是 price_delta×份数。"
         )
     return detail
 
@@ -1206,12 +1213,17 @@ def cmd_select_address(args, gw: MCPClient, cache: Cache, config: Config,
 
 def _parse_items(raw_items: str) -> list[dict]:
     """Parse --items JSON into clean CartItem dicts (open-gateway shape):
-    {item_id, sku_id?, quantity, ingredient_option_ids?, remark?}. The gateway
-    forbids extra fields, so only these keys are forwarded."""
+    {item_id, sku_id?, quantity, ingredient_option_ids?, ingredient_quantities?, remark?}.
+    The gateway forbids extra fields, so only these keys are forwarded.
+
+    ingredient_quantities（doc v3.0，[{option_id, quantity}]）= 份数型加料：某加料 max_quantity>1
+    时（如浓缩 x3），份数放这里；同一 option_id 列在这里即算选中，**不要**再塞进
+    ingredient_option_ids。份数价按菜单 price_steps 分档，不是 price_delta×份数。"""
     parsed = json.loads(raw_items)
     if not isinstance(parsed, list) or not parsed:
         die("--items 必须是非空 JSON 数组，元素形如 "
-            '{"item_id":"item_x","quantity":1,"sku_id":"sku_y","ingredient_option_ids":["opt_z"],"remark":"少冰"}')
+            '{"item_id":"item_x","quantity":1,"sku_id":"sku_y","ingredient_option_ids":["opt_z"],'
+            '"ingredient_quantities":[{"option_id":"opt_shot","quantity":3}],"remark":"少冰"}')
     items: list[dict] = []
     for raw in parsed:
         if not isinstance(raw, dict) or not raw.get("item_id"):
@@ -1226,6 +1238,20 @@ def _parse_items(raw_items: str) -> list[dict]:
         opt_ids = raw.get("ingredient_option_ids")
         if isinstance(opt_ids, list) and opt_ids:
             entry["ingredient_option_ids"] = [str(o) for o in opt_ids]
+        # 份数型加料（doc v3.0）：[{option_id, quantity}]，quantity≥1；缺 option_id / 畸形项丢弃
+        iq = raw.get("ingredient_quantities")
+        if isinstance(iq, list) and iq:
+            clean_iq: list[dict] = []
+            for e in iq:
+                if not isinstance(e, dict) or not e.get("option_id"):
+                    continue
+                try:
+                    q = int(e.get("quantity", 1))
+                except (TypeError, ValueError):
+                    q = 1
+                clean_iq.append({"option_id": str(e["option_id"]), "quantity": max(1, q)})
+            if clean_iq:
+                entry["ingredient_quantities"] = clean_iq
         if raw.get("remark"):
             entry["remark"] = str(raw["remark"])
         items.append(entry)
@@ -1576,7 +1602,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--address-id", required=True, help="平台地址 id（addr_…）")
     p.add_argument("--items", required=True,
                    help='JSON array：[{"item_id":"item_x","quantity":1,"sku_id":"sku_y",'
-                        '"ingredient_option_ids":["opt_z"],"remark":"少冰"}]')
+                        '"ingredient_option_ids":["opt_z"],'
+                        '"ingredient_quantities":[{"option_id":"opt_shot","quantity":3}],"remark":"少冰"}]'
+                        '（份数型加料如浓缩 x3 用 ingredient_quantities，别再列进 ingredient_option_ids）')
     p.add_argument("--note", default=None, help="订单备注（order_remark）")
 
     p = sub.add_parser("create_order", parents=[common],

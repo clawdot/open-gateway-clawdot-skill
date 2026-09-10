@@ -479,12 +479,15 @@ def test_flow_threading() -> None:
     out = run_ok(clawdot.cmd_preview_order,
                  parse(["preview_order", "--shop-id", "shop_1", "--address-id", "addr_1",
                         "--items", json.dumps([{"item_id": "item_1", "quantity": 2,
-                                                "sku_id": "sku_1", "extra_field": "DROP_ME"}])]),
+                                                "sku_id": "sku_1", "extra_field": "DROP_ME",
+                                                "ingredient_quantities": [{"option_id": "opt_shot",
+                                                                           "quantity": 3}]}])]),
                  gw, cache, cfg, "cg_x", None)
     _name, args = rpc_of(last_call())
     check("flow.preview_cart", args.get("cart_id") == "cart_1", str(args))
     check("flow.items_whitelist",
-          args["items"] == [{"item_id": "item_1", "quantity": 2, "sku_id": "sku_1"}],
+          args["items"] == [{"item_id": "item_1", "quantity": 2, "sku_id": "sku_1",
+                             "ingredient_quantities": [{"option_id": "opt_shot", "quantity": 3}]}],
           str(args["items"]))
 
     # create_order 命令：preview_id + confirmation_token 交接、payment_link 提升
@@ -630,6 +633,55 @@ def test_verify_bind_env_shadow_warning() -> None:
     check("shadow.absent", "warning" not in out, str(out)[:200])
 
 
+def test_ingredient_quantities() -> None:
+    # 份数型加料转发（doc v3.0）：合法项原样带上
+    items = clawdot._parse_items(json.dumps([{
+        "item_id": "item_1", "quantity": 1, "sku_id": "sku_1",
+        "ingredient_option_ids": ["opt_a"],
+        "ingredient_quantities": [{"option_id": "opt_shot", "quantity": 3}],
+    }]))
+    check("iq.forwarded",
+          items[0].get("ingredient_quantities") == [{"option_id": "opt_shot", "quantity": 3}],
+          str(items))
+    # 清洗：缺 option_id 的项丢弃、quantity 强制 ≥1、非数值兜底 1
+    items = clawdot._parse_items(json.dumps([{
+        "item_id": "item_1", "quantity": 1,
+        "ingredient_quantities": [
+            {"option_id": "opt_ok", "quantity": 0},      # → 1
+            {"quantity": 5},                              # 缺 option_id → 丢
+            {"option_id": "opt_b", "quantity": "bad"},    # 非数 → 1
+        ],
+    }]))
+    check("iq.sanitized",
+          items[0].get("ingredient_quantities") == [
+              {"option_id": "opt_ok", "quantity": 1},
+              {"option_id": "opt_b", "quantity": 1}],
+          str(items))
+    # 全畸形 → 不产生 ingredient_quantities 键（不产噪音）
+    items = clawdot._parse_items(json.dumps([{"item_id": "item_1", "quantity": 1,
+                                              "ingredient_quantities": [{"quantity": 2}]}]))
+    check("iq.all_bad_omitted", "ingredient_quantities" not in items[0], str(items))
+    # 负向红线：不带 ingredient_quantities 的 item 输出逐字段不变（仍只 5 个白名单键）
+    items = clawdot._parse_items(json.dumps([{
+        "item_id": "item_1", "quantity": 2, "sku_id": "sku_1",
+        "ingredient_option_ids": ["opt_a"], "remark": "少冰", "junk": "DROP"}]))
+    check("iq.absent_unchanged",
+          items[0] == {"item_id": "item_1", "quantity": 2, "sku_id": "sku_1",
+                       "ingredient_option_ids": ["opt_a"], "remark": "少冰"},
+          str(items))
+
+
+def test_search_match_level() -> None:
+    # trim_search_results 透出 search_match_level（related≠搜到该品牌）
+    trimmed = clawdot.trim_search_results({
+        "shops": [{"shop_id": "s1", "cart_id": "c1", "name": "同类推荐店"}],
+        "search_match_level": "related"})
+    check("sml.surfaced", trimmed.get("search_match_level") == "related", str(trimmed))
+    # 无该字段 → 不产生键（浏览模式等）
+    trimmed = clawdot.trim_search_results({"shops": []})
+    check("sml.absent_clean", "search_match_level" not in trimmed, str(trimmed))
+
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -642,6 +694,8 @@ def main() -> int:
         test_cred_store,
         test_consent_resolution_priority,
         test_flow_threading,
+        test_ingredient_quantities,
+        test_search_match_level,
         test_verify_bind_writes_shared_cache,
         test_cred_store_delete,
         test_revoke_user_bind,

@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.0] - 2026-09-10 — 对齐接口文档 v4.2：份数型加料
+
+对照官方《API/MCP 接口说明文档 v4.2》增量核对：v2.2.x→v4.2 主体是纯新增/展示字段，下单主链路
+零破坏、无新增强制步骤。本次只补落在下单链路的三处（其余经 `output` 透传或 `call` 通道已可达）。
+
+### Added
+
+- **份数型加料 `ingredient_quantities`（doc v3.0）**：`preview_order` 的 items 白名单接受
+  `ingredient_quantities:[{option_id,quantity}]`——加料 `max_quantity>1`（如浓缩 x3）时份数放这里；
+  此前 `_parse_items` 会把它剔除、导致多份加料只能点 1 份。清洗：缺 `option_id` 丢弃、`quantity`≥1、
+  非数值兜底 1；**不带该字段的 item 输出逐字段不变**。ingredient_hint / GUIDE / params / commands 同步说明。
+- **`search_match_level` 透出（doc v3.0）**：`trim_search_results` 带出 `exact`/`related`，
+  让 agent 别把 `related`（没搜到品牌、返回同类推荐店）当成"搜到了这家"。
+
+### Docs
+
+- **`shop_activities` 单位是元（doc §10.1）**：全 API「金额一律分」的唯一例外，GUIDE / params 补明「别再 ÷100」。
+
 ## [2.2.2] - 2026-07-24 — API_KEY 无效引导自带注册页
 
 ### Fixed
