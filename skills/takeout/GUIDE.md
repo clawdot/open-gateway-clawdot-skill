@@ -353,6 +353,7 @@ recommend 返回 N 家 → 全部展示，不要自行裁剪删减。
     用户选哪个，就把该项 `sku_id` 放进 items[].sku_id；不传则用默认 SKU。
   - `ingredient_options[]`：加料/属性/口味（可多选）。每项带 `option_id`、`group_name`、`name`、
     `selected_by_default`。用户选中的项，把 `option_id` 收进 items[].ingredient_option_ids。
+    带 `max_quantity>1` / `price_steps` 的份数型加料（如浓缩 x3）→ 用 items[].ingredient_quantities=[{option_id,quantity}]，别再进 ingredient_option_ids。
 
 ⚠️ 多 SKU 铁律：
    - 不同杯型/份量是不同 `sku_id`，配送可指定。除非 preview 明确返回该规格不可用，
@@ -487,9 +488,10 @@ preview_order --shop-id --address-id --items '[...]' [--note "..."] → 拿到 p
 items JSON 用 open-gateway 形态（id 全部来自当前店 menu 输出）：
   [{"item_id": "item_x", "quantity": 1, "sku_id": "sku_y", "ingredient_option_ids": ["opt_a"], "remark": "少冰"}]
   - sku_id：用户选的规格/杯型，取自该商品 sku_options[].sku_id；不传则用默认 SKU
-  - ingredient_option_ids：用户选的加料/口味，取自 ingredient_options[].option_id；没有就省略
+  - ingredient_option_ids：用户选的单选加料/口味，取自 ingredient_options[].option_id；没有就省略
+  - ingredient_quantities：份数型加料（加料带 max_quantity>1，如浓缩 x3），形如 [{"option_id":"opt_shot","quantity":3}]；列这里即算选中、别再进 ingredient_option_ids；没有就省略
   - quantity 必填且 ≥1；remark 选填（单品备注）
-用朋友口吻一段话说清 5 件事：店名 + 商品（含规格） + 每项费用 + 最终价 + 配送时间地址（金额单位为分，展示时换算成元）
+用朋友口吻一段话说清 5 件事：店名 + 商品（含规格） + 每项费用 + 最终价 + 配送时间地址（金额单位为分，展示时换算成元；**唯一例外** shop_activities 店铺立减已是元、别再 ÷100）
 用户选菜时/选菜后说了备注（"不要辣"/"放门口"等）→ 带 --note（整单备注）；没说就别加
 失败 → 静默重试最多 1 次，第 2 次仍失败告诉用户换组合
 ```

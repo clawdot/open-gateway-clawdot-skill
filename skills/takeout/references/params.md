@@ -9,13 +9,16 @@ JSON 数组，每个元素（open-gateway CartItem 形态，多余字段会被 C
   "item_id": "item_x",              // 必填，来自当前店 get_shop_menu 输出
   "quantity": 1,                    // preview_order 必填 ≥1（get_item_options 不需要）
   "sku_id": "sku_y",                // 可选：规格/杯型，取自该商品 sku_options[].sku_id
-  "ingredient_option_ids": ["opt_z"], // 可选：加料/属性，取自 ingredient_options[].option_id
+  "ingredient_option_ids": ["opt_z"], // 可选：单选加料/属性，取自 ingredient_options[].option_id
+  "ingredient_quantities": [{"option_id": "opt_shot", "quantity": 3}], // 可选：份数型加料（max_quantity>1，如浓缩x3）；列这里即算选中，勿再进 ingredient_option_ids
   "remark": "少冰"                   // 可选：单品备注
 }]
 ```
 
 铁律：所有 id 来自**当前店当前 cart 上下文**的 get_shop_menu / get_item_options 输出；
 禁止跨店复用、禁止把中文菜名当 item_id。
+份数型加料（加料带 `max_quantity>1` / `price_steps`）用 `ingredient_quantities` 传份数，
+份数价按菜单 `price_steps` 分档、不是 `price_delta×份数`；单选加料仍走 `ingredient_option_ids`。
 
 ## 地址相关字段
 
@@ -27,7 +30,8 @@ JSON 数组，每个元素（open-gateway CartItem 形态，多余字段会被 C
 
 ## 金额与坐标
 
-- 所有金额字段单位为**分**（展示时换算成元）
+- 所有金额字段单位为**分**（展示时换算成元）——**唯一例外**：`preview_order` 返回的
+  `shop_activities`（店铺自动立减/满返）金额单位是**元**，别再 ÷100
 - 坐标为 GCJ-02（高德系）；`--city` 传中文/拼音/缩写均可，传了 city 则丢弃坐标
 
 ## 凭据与缓存

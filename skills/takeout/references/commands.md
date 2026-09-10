@@ -67,7 +67,9 @@
 ### get_item_options / preview_order / create_order / get_order_status
 ```
 --items <JSON>         [{"item_id":"item_x","quantity":1,"sku_id":"sku_y",
-                         "ingredient_option_ids":["opt_z"],"remark":"少冰"}]
+                         "ingredient_option_ids":["opt_z"],
+                         "ingredient_quantities":[{"option_id":"opt_shot","quantity":3}],"remark":"少冰"}]
+                       （ingredient_quantities=份数型加料，如浓缩x3；勿与 ingredient_option_ids 重复列同一 option）
 --note <str>           (preview_order) 整单备注
 --preview-id / --confirmation-token   (create_order) 均来自 preview_order 返回
 --order-id <str>       (get_order_status)
