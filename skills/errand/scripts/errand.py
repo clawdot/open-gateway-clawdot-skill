@@ -209,15 +209,65 @@ class MCPClient:
         """绑定第 2 步：核验验证码，返回 {bound, consent_grant_id, scopes, expires_at}。"""
         return self._call("errand_verify_user_bind", {"bind_id": bind_id, "code": code})
 
+    # ── 授权状态（用户态）────────────────────────────────────────────────────
+
+    def get_auth_status(self, cg: str) -> dict:
+        """查这枚 cg 是否仍有效。**凭证无效不报错**——看返回的 bound 字段判断要不要重绑。"""
+        return self._call("errand_get_auth_status", {"consent_grant_id": cg})
+
+    def revoke_bind(self, cg: str, reset_history: bool = False) -> dict:
+        """解绑。reset_history=True 连地址簿与历史单一并清退，**不可逆**。"""
+        return self._call("errand_revoke_user_bind", {
+            "consent_grant_id": cg, "reset_history": reset_history or None,
+        })
+
     # ── 业务（用户态，consent 作为参数）──────────────────────────────────────
 
     def list_addresses(self, cg: str) -> dict:
         return self._call("errand_list_addresses", {"consent_grant_id": cg})
 
-    def search_addresses(self, cg: str, *, keyword: str, city: str | None = None) -> dict:
+    def search_addresses(self, cg: str, *, keyword: str | None = None,
+                         city: str | None = None,
+                         lat: float | None = None, lng: float | None = None) -> dict:
+        """搜地址。keyword 与 lat/lng 至少给一样：给 keyword=按地名搜（可加 city 缩范围）；
+        只给 lat/lng=按用户当前位置反查地点名。返回 {candidates, saved_matches}——
+        saved_matches 是用户已存过且命中本次搜索的地址，门牌电话都齐，选它可直接下单。"""
         return self._call("errand_search_addresses", {
             "consent_grant_id": cg, "keyword": keyword, "city": city,
+            "lat": lat, "lng": lng,
         })
+
+    def update_address(self, cg: str, *, address_id: str, contact_name: str | None = None,
+                       contact_phone: str | None = None, address: str | None = None,
+                       lat: float | None = None, lng: float | None = None,
+                       detail: str | None = None, tag: str | None = None) -> dict:
+        """改址：只传要改的字段，没传的保持原样。改**位置**须 address+lat+lng 三个一起传。"""
+        args: dict = {"consent_grant_id": cg, "address_id": address_id,
+                      "contact_name": contact_name, "contact_phone": contact_phone,
+                      "address": address, "lat": lat, "lng": lng, "detail": detail}
+        # tag="" 是「清空标签」的合法值，会被 _call 的 None 过滤放行、但不能写成 None，
+        # 故此处显式判 None 再塞（其余字段空串按「没传」处理，与网关口径一致）
+        if tag is not None:
+            args["tag"] = tag
+        return self._call("errand_update_address", args)
+
+    def delete_address(self, cg: str, address_id: str) -> dict:
+        """删址，**不可撤销**。返回 {address_id, deleted, deleted_count}。"""
+        return self._call("errand_delete_address", {
+            "consent_grant_id": cg, "address_id": address_id,
+        })
+
+    # ── 询价辅助清单（摆给用户挑）────────────────────────────────────────────
+
+    def list_goods_categories(self, cg: str) -> dict:
+        """物品品类清单（15 项，前 7 项 valuable=贵重）。选中项的 code 回填 quote。
+        **理赔只看品类码、不看物品名称**，所以要选对。清单固定、可缓存。"""
+        return self._call("errand_list_goods_categories", {"consent_grant_id": cg})
+
+    def list_schedule_slots(self, cg: str) -> dict:
+        """可预约送达档位（一档 15 分钟，最早 45 分钟后、最晚明天 23:45）。
+        **只能把清单里的 value 原样回填 quote 的 --scheduled-at**，自己算的会被拒。"""
+        return self._call("errand_list_schedule_slots", {"consent_grant_id": cg})
 
     def save_address(self, cg: str, *, contact_name: str, address: str,
                      lat: float, lng: float, detail: str = "", tag: str = "",
@@ -228,17 +278,29 @@ class MCPClient:
             "contact_phone": contact_phone,
         })
 
-    def list_orders(self, cg: str, *, limit: int = 5) -> dict:
-        return self._call("errand_list_orders", {"consent_grant_id": cg, "limit": limit})
+    def list_orders(self, cg: str, *, limit: int = 5, offset: int = 0,
+                    status: str | None = None, created_after: str | None = None,
+                    created_before: str | None = None) -> dict:
+        """历史单。返回 **{orders, next_offset}**（next_offset=null 表示没有更多）。
+        status 逗号分隔可多传；created_after/before 按北京时间、形如 2026-08-01[ 10:30:00]。"""
+        return self._call("errand_list_orders", {
+            "consent_grant_id": cg, "limit": limit, "offset": offset or None,
+            "status": status, "created_after": created_after,
+            "created_before": created_before,
+        })
 
     def quote(self, cg: str, *, from_address: dict, to_address: dict, goods: list[dict],
               total_weight_g: int | None = None, scheduled_at: int | None = None,
               person_direct: bool = False, insured: bool = False,
-              remark: str | None = None) -> dict:
+              remark: str | None = None, goods_category_code: int | None = None) -> dict:
+        """询价。goods_category_code 取自 list_goods_categories——**理赔以品类为准、与
+        物品名称无关**，不传则退回平台默认品类。scheduled_at 只收 list_schedule_slots
+        给出的档位值。物品名与 remark 都会做禁运校验（命中回 GOODS_PROHIBITED）。"""
         return self._call("errand_quote", {
             "consent_grant_id": cg, "from_address": from_address, "to_address": to_address,
             "goods": goods, "total_weight_g": total_weight_g, "scheduled_at": scheduled_at,
             "person_direct": person_direct, "insured": insured, "remark": remark,
+            "goods_category_code": goods_category_code,
         })
 
     def create(self, cg: str, *, quote_id: str, company_code: int,
@@ -343,6 +405,16 @@ class CredStore:
                     out[phone] = cg
         return out
 
+    def drop(self, phone: str) -> None:
+        """解绑后作废**该号**的本地缓存——留着只会拿已失效的 cg 一直撞 CONSENT_GRANT_INVALID。
+
+        刻意只提供单号删除、不提供「清空本指纹」：解绑是不可逆动作，批量清会波及同一
+        API_KEY 下其他用户的有效凭证（他们网关侧还绑着，本地却没了、得重走短信绑定）。
+        """
+        bucket = self._data.get(self.fingerprint, {})
+        if bucket.pop(phone, None) is not None:
+            self._save()
+
 
 # ── Consent Grant Resolution ─────────────────────────────────────────────────
 
@@ -384,10 +456,95 @@ def resolve_consent_grant(phone: str | None, creds: CredStore, config: Config) -
 ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
     # 注意：不能用裸 `QUOTE.*INVALID`——会吞掉 QUOTE_FEE_INVALID（那是"金额异常，别硬下单"，
     # 语义与"报价过期"相反）。只匹配过期专属码 QUOTE_INVALID_OR_EXPIRED / QUOTE_EXPIRED。
-    (r"QUOTE_INVALID_OR_EXPIRED|QUOTE.*EXPIRED|PUBLIC_REFERENCE_INVALID|报价.*(失效|过期)|令牌.*(失效|过期)",
+    # 也**不能**再把 PUBLIC_REFERENCE_INVALID 并进来：文档 v3.0 起它专指 callback_url
+    # 不是公网地址，与报价过期无关（并进来会让用户收到"重新询价"这种驴唇不对马嘴的指引）。
+    (r"QUOTE_INVALID_OR_EXPIRED|QUOTE.*EXPIRED|报价.*(失效|过期)|令牌.*(失效|过期)",
      "QUOTE_EXPIRED",
      "报价已过期或失效。",
      "报价有效期约 10 分钟。用同样的收发地址/物品重新 quote 拿新的 quote_id，再 create。"),
+
+    (r"PUBLIC_REFERENCE_INVALID",
+     "CALLBACK_URL_INVALID",
+     "回调地址不可用。",
+     "create 的 --callback-url 必须是公网可访问的 http(s) 地址，localhost/内网地址会被拒。"
+     "一般用不到这个参数，去掉重下即可。"),
+
+    # ── 预约时间（v3.0：只收 list_schedule_slots 给出的档位）──
+    (r"SCHEDULED_AT_NOT_ON_GRID",
+     "SCHEDULED_AT_NOT_ON_GRID",
+     "预约时间不在可选档位上。",
+     "**别自己算时间戳**。调 list_schedule_slots 拿档位清单，把用户选中那档的 value 原样回填。"),
+
+    (r"SCHEDULED_AT_PAST",
+     "SCHEDULED_AT_PAST",
+     "预约时间已经过去了。",
+     "复用历史单最常撞这个——旧单的预约时间早过期了，别照抄。重新 list_schedule_slots 问用户约几点。"),
+
+    (r"SCHEDULED_AT_TOO_SOON",
+     "SCHEDULED_AT_TOO_SOON",
+     "预约时间太近了。",
+     "最早只能约 45 分钟后；错误消息里给了当前最早可约时间。要马上送就别传 --scheduled-at（即时单）。"),
+
+    (r"SCHEDULED_AT_TOO_FAR",
+     "SCHEDULED_AT_TOO_FAR",
+     "预约时间太远了。",
+     "最晚只能约到明天 23:45（北京时间）。跟用户说只能约到明天，重新选一档。"),
+
+    (r"SCHEDULED_AT_INVALID",
+     "SCHEDULED_AT_INVALID",
+     "预约时间格式不对。",
+     "须是 13 位**毫秒**时间戳（传成秒/小数/负数都会命中）。直接用 list_schedule_slots 的 value，别自己转。"),
+
+    # ── 物品品类与禁运 ──
+    (r"GOODS_PROHIBITED",
+     "GOODS_PROHIBITED",
+     "这个东西跑腿不能寄。",
+     "物品名或备注命中禁运（毒品/枪爆/危化品/违法交易物），错误消息会点名具体词与类别。"
+     "**如实告诉用户该物品无法配送，禁止改词重试绕过**。"
+     "若是正常商品被误判（如「大麻花」这类含敏感字的合法食品），换个更准确的名称重新询价。"),
+
+    (r"GOODS_CATEGORY_INVALID",
+     "GOODS_CATEGORY_INVALID",
+     "物品品类码不对。",
+     "--goods-category-code 必须取自 list_goods_categories 返回的 code；重新拉一次清单再选。"),
+
+    (r"REMARK_TOO_LONG",
+     "REMARK_TOO_LONG",
+     "给骑手的留言太长了。",
+     "--remark 最多 200 字，精简后重试。"),
+
+    # ── 历史单筛选 ──
+    (r"ERRAND_STATUS_INVALID",
+     "ERRAND_STATUS_INVALID",
+     "订单状态筛选值不支持。",
+     "--status 取订单状态原值（如 dispatching,delivering），逗号分隔；错误消息里列出了全部可选值。"),
+
+    (r"ERRAND_TIME_RANGE_INVALID",
+     "ERRAND_TIME_RANGE_INVALID",
+     "时间筛选格式不对。",
+     "--created-after/--created-before 写 2026-08-01 或 '2026-08-01 10:30:00'（北京时间，别自己换算时区）。"),
+
+    # ── 改址 / 删址 ──
+    (r"ADDRESS_COORDS_PAIRED",
+     "ADDRESS_COORDS_PAIRED",
+     "改地址位置要地址和坐标一起改。",
+     "--address --lat --lng 三个一起传（只改文本不改坐标，骑手会按旧坐标去旧地方）。"
+     "先 search_addresses 搜到新地点拿坐标。"),
+
+    (r"ADDRESS_DUPLICATE",
+     "ADDRESS_DUPLICATE",
+     "改完会和已有的另一条地址重复。",
+     "地址+门牌+联系人三者都相同即视为同一条。换个门牌/联系人，或直接用已有的那条。"),
+
+    (r"ADDRESS_UPDATE_EMPTY",
+     "ADDRESS_UPDATE_EMPTY",
+     "没有指定要改什么。",
+     "至少给一个要改的字段：--contact-name/--contact-phone/--detail/--tag，或 --address+--lat+--lng。"),
+
+    (r"ADDRESS_FIELD_TOO_LONG",
+     "ADDRESS_FIELD_TOO_LONG",
+     "地址信息太长了。",
+     "地址/联系人/门牌/标签/电话有长度上限，精简后重试。"),
 
     (r"CONSENT_GRANT_EXPIRED|AUTH_EXPIRED|授权.*过期",
      "CONSENT_EXPIRED",
@@ -482,7 +639,8 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
     (r"KEYWORD_REQUIRED|缺.*关键词",
      "KEYWORD_REQUIRED",
      "没给搜索关键词。",
-     "search_addresses 必须带 --keyword。"),
+     "search_addresses 要么给 --keyword（地名），要么给 --lat --lng（按用户当前位置搜）；"
+     "两者至少给一样。"),
 
     # ── 地址服务 ──
     (r"ADDRESS_SEARCH_FAILED|搜索失败",
@@ -760,9 +918,91 @@ def cmd_list_addresses(args, gw: MCPClient, config: Config, cg: str, phone: str 
 
 
 def cmd_search_addresses(args, gw: MCPClient, config: Config, cg: str, phone: str | None) -> None:
-    if not args.keyword:
-        die("缺 --keyword（POI 搜索关键词，如 '西湖文化广场'；同名多地时带 --city）")
-    result = gw.search_addresses(cg, keyword=args.keyword, city=args.city)
+    has_coords = args.lat is not None and args.lng is not None
+    if not args.keyword and not has_coords:
+        die("搜地址要么给 --keyword（地名，如 '西湖文化广场'，同名多地时带 --city），"
+            "要么给 --lat --lng（按用户当前位置反查地点名）")
+    result = gw.search_addresses(cg, keyword=args.keyword, city=args.city,
+                                 lat=args.lat if has_coords else None,
+                                 lng=args.lng if has_coords else None)
+    output(result)
+
+
+def cmd_update_address(args, gw: MCPClient, config: Config, cg: str, phone: str | None) -> None:
+    if not args.address_id:
+        die("缺 --address-id（要改哪条，来自 list_addresses 的 plat_ 开头那个）")
+    # 改位置必须三件套齐全：只改文本不改坐标会让骑手按旧坐标去旧地方
+    loc = [args.address, args.lat, args.lng]
+    if any(v is not None for v in loc) and any(v is None for v in loc):
+        die("改地址位置要 --address --lat --lng 三个一起传"
+            "（只改文本不改坐标，骑手会按旧坐标去旧地方）；先 search_addresses 拿新坐标")
+    if all(v is None for v in (args.contact_name, args.contact_phone, args.address,
+                               args.lat, args.lng, args.detail, args.tag)):
+        die("没有要改的字段：至少给一个 --contact-name/--contact-phone/--detail/--tag "
+            "或 --address+--lat+--lng")
+    output(gw.update_address(
+        cg, address_id=args.address_id, contact_name=args.contact_name,
+        contact_phone=args.contact_phone, address=args.address,
+        lat=args.lat, lng=args.lng, detail=args.detail, tag=args.tag,
+    ))
+
+
+def cmd_delete_address(args, gw: MCPClient, config: Config, cg: str, phone: str | None) -> None:
+    if not args.address_id:
+        die("缺 --address-id（要删哪条，来自 list_addresses 的 plat_ 开头那个）")
+    output(gw.delete_address(cg, args.address_id))
+
+
+def cmd_list_goods_categories(args, gw: MCPClient, config: Config, cg: str,
+                              phone: str | None) -> None:
+    output(gw.list_goods_categories(cg))
+
+
+def cmd_list_schedule_slots(args, gw: MCPClient, config: Config, cg: str,
+                            phone: str | None) -> None:
+    output(gw.list_schedule_slots(cg))
+
+
+def cmd_auth_status(args, gw: MCPClient, config: Config, cg: str, phone: str | None) -> None:
+    # 凭证无效不报错：看 bound 字段。bound=false 时 next_action=request_user_bind
+    output(gw.get_auth_status(cg))
+
+
+def cmd_revoke_user_bind(args, gw: MCPClient, config: Config, cg: str,
+                         phone: str | None) -> None:
+    """解绑。**破坏性且不可逆**（--reset-history 会清退地址簿与历史单），故这里不复用
+    resolve_consent_grant 的宽松兜底：那条路径在「带 --phone 但缓存没命中」时会回落到
+    CONSENT_GRANT_INVALID 环境变量的 cg——读接口顶多读错人，解绑却会把**另一个用户**
+    解掉、甚至不可逆清掉他的地址簿，且现场看不出异常。所以此处要求 cg 与目标身份精确对应。
+    """
+    creds = CredStore(config.api_key, config.clawdot_home)
+    bound = creds.all()
+    target = normalize_phone(phone) if phone else None
+
+    if target:
+        cached = creds.get(target)
+        if not cached:
+            die(f"手机号 {mask_phone(target)} 在本地没有已绑定记录，不解绑。\n"
+                "（避免误解绑别人：解绑只认本地缓存里这个号自己的凭证，不拿环境变量的 cg 顶替。）\n"
+                "先确认手机号对不对；确实要解绑就用绑定时那台机器/那份缓存。")
+        if cached != cg:
+            die(f"手机号 {mask_phone(target)} 的凭证与本次解析到的不一致，不解绑。\n"
+                "（多半是 CONSENT_GRANT_ID 环境变量顶替了缓存——解绑不接受这种兜底。）")
+        cg = cached
+    else:
+        if len(bound) > 1:
+            die("本地有多个已绑用户，解绑必须用 --phone 指明是哪一个。\n"
+                f"（已绑 {len(bound)} 个号；解绑不可逆，不做猜测。）")
+        if bound and next(iter(bound.values())) != cg:
+            die("本次解析到的凭证与本地唯一已绑用户的不一致，不解绑。\n"
+                "（多半是 CONSENT_GRANT_ID 环境变量顶替了缓存——解绑不接受这种兜底。）")
+        target = next(iter(bound), None)  # 缓存为空=纯 env 预注入模式，无本地凭证可清
+
+    result = gw.revoke_bind(cg, reset_history=bool(args.reset_history))
+    # 网关侧已失效，本地缓存同步作废——留着只会拿废 cg 一直撞 CONSENT_GRANT_INVALID。
+    # 只 drop 实际解绑的那一条，绝不 drop_all（别人的凭证不受牵连）。
+    if target:
+        creds.drop(target)
     output(result)
 
 
@@ -778,7 +1018,12 @@ def cmd_save_address(args, gw: MCPClient, config: Config, cg: str, phone: str | 
 
 
 def cmd_list_orders(args, gw: MCPClient, config: Config, cg: str, phone: str | None) -> None:
-    result = gw.list_orders(cg, limit=int(args.limit or 5))
+    # 返回 {orders, next_offset}——翻页把 next_offset 原样当下次的 --offset；null=没有更多
+    result = gw.list_orders(
+        cg, limit=int(args.limit or 5), offset=int(args.offset or 0),
+        status=args.status, created_after=args.created_after,
+        created_before=args.created_before,
+    )
     output(result)
 
 
@@ -794,6 +1039,7 @@ def cmd_quote(args, gw: MCPClient, config: Config, cg: str, phone: str | None) -
         cg, from_address=from_ep, to_address=to_ep, goods=goods,
         total_weight_g=args.weight, scheduled_at=args.scheduled_at,
         person_direct=args.person_direct, insured=args.insured, remark=args.remark,
+        goods_category_code=args.goods_category_code,
     )
     # 返回 {quote_id, quotes, expires_in_seconds}：把 quote_id 与 quotes 原样交给 agent，
     # agent 把运力报价给用户选，选定后带 quote_id + company_code 调 create。
@@ -849,9 +1095,15 @@ def cmd_add_tip(args, gw: MCPClient, config: Config, cg: str, phone: str | None)
 # ── Main ────────────────────────────────────────────────────────────────────
 
 COMMANDS = {
+    "auth_status": cmd_auth_status,
+    "revoke_user_bind": cmd_revoke_user_bind,
     "list_addresses": cmd_list_addresses,
     "search_addresses": cmd_search_addresses,
     "save_address": cmd_save_address,
+    "update_address": cmd_update_address,
+    "delete_address": cmd_delete_address,
+    "list_goods_categories": cmd_list_goods_categories,
+    "list_schedule_slots": cmd_list_schedule_slots,
     "list_orders": cmd_list_orders,
     "quote": cmd_quote,
     "create": cmd_create,
@@ -887,13 +1139,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bind-id", default=None, help="request_user_bind 返回的 bind_id")
     p.add_argument("--code", default=None, help="用户回复的 6 位短信验证码")
 
+    p = sub.add_parser("auth_status", parents=[common],
+                       help="查授权是否仍有效（凭证失效不报错，看返回的 bound 字段）")
+
+    p = sub.add_parser("revoke_user_bind", parents=[common],
+                       help="解绑（撤销用户授权）；同时作废本地缓存的 cg")
+    p.add_argument("--reset-history", action="store_true",
+                   help="连地址簿与历史订单一并清退，**不可逆**；换人用这台设备/这个号才传")
+
     p = sub.add_parser("list_addresses", parents=[common],
-                       help="列该手机号名下地址簿（选收发地址）")
+                       help="列该手机号名下跑腿地址簿（id 恒 plat_ 前缀；与外卖地址簿独立）")
 
     p = sub.add_parser("search_addresses", parents=[common],
-                       help="POI 关键词搜地点 → 候选列给用户挑（绝不自动取第一个）")
-    p.add_argument("--keyword", required=True, help="POI 搜索关键词，如 '西湖文化广场'")
+                       help="搜地点 → candidates + saved_matches（已存过的那份可直接下单）")
+    p.add_argument("--keyword", default=None, help="地名关键词，如 '西湖文化广场'")
     p.add_argument("--city", default=None, help="城市名，可选（同名多地时缩小范围）")
+    p.add_argument("--lat", type=float, default=None,
+                   help="用户当前位置纬度；只给坐标=按位置反查地点名（'从我现在的位置'）")
+    p.add_argument("--lng", type=float, default=None, help="用户当前位置经度")
 
     p = sub.add_parser("save_address", parents=[common],
                        help="把选中的地址存进地址簿，下次直接复用")
@@ -904,12 +1167,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contact-phone", default=None,
                    help="联系电话（可选）；存了之后拿这个地址下单不必再报手机号。"
                         "落库即密文，出参只回脱敏 138****5678")
-    p.add_argument("--detail", default=None, help="门牌/楼层等补充（存了下单自动拼进地址，不回显）")
+    p.add_argument("--detail", default=None,
+                   help="门牌/楼层等补充（下单自动拼进地址；查地址簿时原样返回）")
     p.add_argument("--tag", default=None, help="标签，如 家/公司")
 
+    p = sub.add_parser("update_address", parents=[common],
+                       help="改地址簿某条（只传要改的字段；改位置须 address+lat+lng 齐传）")
+    p.add_argument("--address-id", required=True, help="要改哪条（plat_ 前缀）")
+    p.add_argument("--contact-name", default=None, help="新联系人")
+    p.add_argument("--contact-phone", default=None, help="新联系电话（落库即密文，只回脱敏）")
+    p.add_argument("--address", default=None, help="新地址文本（须与 --lat --lng 一起传）")
+    p.add_argument("--lat", type=float, default=None, help="新纬度（须与 --address --lng 一起传）")
+    p.add_argument("--lng", type=float, default=None, help="新经度（须与 --address --lat 一起传）")
+    p.add_argument("--detail", default=None, help="新门牌/楼层")
+    p.add_argument("--tag", default=None, help="新标签；传空串 '' 可清空标签")
+
+    p = sub.add_parser("delete_address", parents=[common],
+                       help="删地址簿某条（不可撤销，先跟用户确认是哪一条）")
+    p.add_argument("--address-id", required=True, help="要删哪条（plat_ 前缀）")
+
+    p = sub.add_parser("list_goods_categories", parents=[common],
+                       help="物品品类清单（15 项，前 7 项贵重）；选中 code 回填 quote")
+
+    p = sub.add_parser("list_schedule_slots", parents=[common],
+                       help="可预约送达档位（一档 15 分钟）；只能回填清单给的 value")
+
     p = sub.add_parser("list_orders", parents=[common],
-                       help='近几单历史（"还是上次那样" 复用收发/物品）')
+                       help='历史单（"还是上次那样" 复用收发/物品）；返回 {orders, next_offset}')
     p.add_argument("--limit", type=int, default=5, help="条数，默认 5、上限 20")
+    p.add_argument("--offset", type=int, default=0,
+                   help="翻页起点：把上次返回的 next_offset 原样传回")
+    p.add_argument("--status", default=None,
+                   help="按状态筛，逗号分隔可多传，如 dispatching,delivering；传错值会报错")
+    p.add_argument("--created-after", default=None,
+                   help="只看该时间之后的单，如 2026-08-01 或 '2026-08-01 10:30:00'（北京时间）")
+    p.add_argument("--created-before", default=None,
+                   help="只看该时间之前的单；只写日期时含当天全天")
 
     p = sub.add_parser("quote", parents=[common],
                        help="询价：多运力报价（每端用地址簿 id 或搜到的坐标）")
@@ -932,11 +1225,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--goods-name", default=None, help="物品名，如 文件/奶茶")
     p.add_argument("--goods-price", type=int, default=None, help="货值（分）")
     p.add_argument("--weight", type=int, default=1000, help="总重量（克），默认 1000")
-    p.add_argument("--remark", default=None, help="给骑手的备注")
+    p.add_argument("--goods-category-code", type=int, default=None,
+                   help="物品品类码，取自 list_goods_categories。**理赔只看品类、不看物品名**，"
+                        "不传会退回平台默认品类")
+    p.add_argument("--remark", default=None,
+                   help="给骑手的留言（最多 200 字），如 '放门口别敲门，家里有狗'")
     p.add_argument("--scheduled-at", type=int, default=None,
-                   help="预约送达时间，毫秒时间戳；不传=即时单")
+                   help="预约送达时间：**只能填 list_schedule_slots 给出的 value**，"
+                        "自己算的时间戳会被拒；不传=即时单（别传 0）")
     p.add_argument("--person-direct", action="store_true", help="专人直送（不拼单，费用更高）")
-    p.add_argument("--insured", action="store_true", help="保价（按货值口径）")
+    p.add_argument("--insured", action="store_true", help="保价（按货值口径，额外收费）")
 
     p = sub.add_parser("create", parents=[common],
                        help="下单：核销 quote_id + 选定运力，返回付款链接")

@@ -1,5 +1,57 @@
 # Changelog
 
+## [1.2.0] - 2026-09-20 — 对齐《跑腿 MCP 接口说明文档 v3.0》（跨 v2.0+v3.0 两个版本）
+
+skill 此前对齐的是文档 **v1.0**，v2.0（2026-08-15）与 v3.0（2026-09-18）的变更全部未跟。
+本次一次补齐：工具数 13 → **19**，与文档逐条对齐。
+
+### 修掉会直接报错 / 说错话的（v3.0「需回归五处」）
+- **预约时间**：原先让 agent「把时间换算成毫秒时间戳」——**会被网关拒**
+  （`SCHEDULED_AT_NOT_ON_GRID`）。改为必须走 `list_schedule_slots` 取档位、回填其 `value`。
+  一并补 5 个 `SCHEDULED_AT_*` 错误码的处理话术。
+- **物品品类**：原先是 skill 本地硬编码的 9 类表、且**从不向网关传品类码**，
+  而网关侧**理赔只看 `goods_category_code`、不看物品名**——等于每单都落在默认品类。
+  改为调 `list_goods_categories`（15 项），按用户原话自动映射；落在 `valuable=true`
+  的 7 个贵重品类时确认品类并问保价（保价额外收费，**绝不代用户开启**）。
+- **时效反转**：v1.1.0 写着「报价里只有价格距离、没有时效」「**禁止**编造 30 分钟到」。
+  v3.0 起报价已带 `estimated_minutes` / `estimated_arrival_time`——改为**如实报**，
+  「要快」时可真比时效择快；两字段为 null（距离未知）时才不报。
+- **`list_orders` 返回** 由数组改为 `{orders, next_offset}`，补翻页与状态/时间筛选参数。
+- **`pre_cancel` 未支付单**不再报 `ERRAND_CANCEL_NOT_ALLOWED`，正常返回 0/0，
+  文案改为「没付过钱没款可退，直接取消即可」。
+
+### 补齐 6 个缺失工具
+`auth_status`（查授权，失效不报错看 `bound`）、`revoke_user_bind`（解绑，
+`--reset-history` 清退地址簿与历史单、不可逆，并同步作废本地缓存 cg）、
+`update_address`（改址）、`delete_address`（删址）、
+`list_goods_categories`、`list_schedule_slots`。
+
+### 跟上 v2.0 漏掉的
+- **`search_addresses` 返回 `saved_matches`**：用户已存过且命中本次搜索的地址，
+  门牌电话都齐——直接取其 id 下单，**省掉「问门牌 + 问电话」两轮**。
+- **按坐标搜地址**：`--lat --lng` 支持「从我现在的位置」（无地名可搜时反查地点名）。
+- **禁运校验**：物品名与 remark 命中禁运回 `GOODS_PROHIBITED`——如实告知不能寄，
+  **明令禁止改词重试绕过**。
+- `--remark` 明确为「给骑手的留言、上限 200 字」（原先被当成本地"默认备注"用）。
+- 地址簿判重口径＝**地址+门牌+联系人**；门牌**会原样回显**
+  （v1.1.0 的「门牌不回显」已于 2026-08-06 按用户报的 bug 反转——看不见原值没法核对、只能盲改）。
+
+### 其他新增
+`create` 返回整单信息（可直接与预览卡片对账）+ `payment_expire_at`（15 分钟付款期限）；
+`get_order` 对**未支付单**回 `cashier_url`——用户说「付款链接找不到了」可原样重发，不必重新下单；
+取件/送达照片 `pickup_photos` / `finish_photos`。
+
+### 修掉一个误路由
+`PUBLIC_REFERENCE_INVALID` 原映射到 `QUOTE_EXPIRED`（"重新询价"）。v3.0 起该码专指
+**callback_url 不是公网地址**，与报价无关——改为独立的 `CALLBACK_URL_INVALID`，
+否则用户会收到驴唇不对马嘴的指引。错误 playbook 由 39 码扩到 **53 码**。
+
+### 验证
+- `tests/test_errand_cli.py`：新增 `test_v3_tool_mapping`（6 个新工具名 + 新参数逐条钉死，
+  含 `tag=""` 清空标签不被当成"没传"丢掉）；码级全覆盖由 39 → 53 码；
+  argparse 用例覆盖全部 19 个子命令。
+- `verify-errand.sh` 全门禁通过；`build.py errand` 三平台产物正常。
+
 ## [1.1.0] - 2026-07-24 — 对标美团跑腿补交互差距：地址簿带电话、错误码全覆盖、不说做不到的话
 
 对标 `meituan-paotui` skill 逐步比交互流程后，补掉三类差距。

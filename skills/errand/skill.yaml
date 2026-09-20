@@ -6,7 +6,7 @@ description: >
   多运力比价 → 下单拿付款链接 → 跟进配送/加小费/取消。
   鉴权：API_KEY（agent）+ 用户短信绑定拿 consent_grant（能力分格共享缓存持久化）。
   只做「点到点送东西」，点外卖走外卖技能，代购帮买暂不支持。
-version: 1.1.0
+version: 1.2.0
 license: MIT
 author: clawdot
 
@@ -49,20 +49,32 @@ actions:
     description: 用户绑定第 1 步：发短信验证码（跑腿仅短信模式），返回 bind_id
   - name: verify_user_bind
     description: 用户绑定第 2 步：核验验证码，成功后写共享凭证缓存
+  - name: auth_status
+    description: 查该用户授权是否仍有效（凭证失效不报错，看返回的 bound 字段）
+  - name: revoke_user_bind
+    description: 解绑；--reset-history 连地址簿与历史单一并清退（不可逆）
   - name: list_addresses
-    description: 列该手机号名下地址簿（选收发地址）
+    description: 列该手机号名下跑腿地址簿（id 恒 plat_ 前缀；与外卖地址簿独立）
   - name: search_addresses
-    description: POI 关键词搜地点，候选列给用户挑（不自动取第一个）
+    description: 搜地点，返回候选 + 用户已存过且命中的地址（后者可直接下单，不必再问门牌电话）；支持按坐标搜"我现在的位置"
   - name: save_address
     description: 把用户选中的地址（可带门牌/联系电话）存进地址簿，下次下单不必再问
+  - name: update_address
+    description: 改地址簿某条（只传要改的字段；改位置须 address+lat+lng 一起传）
+  - name: delete_address
+    description: 删地址簿某条（不可撤销，先跟用户确认）
+  - name: list_goods_categories
+    description: 物品品类清单（15 项，前 7 项贵重）；理赔只看品类码，下单须带
+  - name: list_schedule_slots
+    description: 可预约送达档位（一档 15 分钟）；预约时间只能取清单给的 value
   - name: list_orders
-    description: 近几单历史，支持"还是上次那样"复用收发/物品
+    description: 历史单（"还是上次那样"复用收发/物品）；支持按状态/时间筛选与翻页
   - name: quote
-    description: 询价：多运力报价 + quote_id（费用/距离）；支持预约送达、专人直送、保价
+    description: 询价：多运力报价（含预计时长与送达时刻）+ quote_id；支持品类、预约、专人直送、保价
   - name: create
-    description: 核销 quote_id + 选定运力下单，返回付款链接（客户自己点开付款）
+    description: 核销 quote_id + 选定运力下单，返回付款链接与整单信息（客户自己点开付款）
   - name: get_order
-    description: 查订单状态/时间线/骑手
+    description: 订单详情/时间线/骑手/照片；未支付单还回付款链接与最晚付款时间
   - name: get_rider
     description: 骑手实时位置（配送中）
   - name: pre_cancel
