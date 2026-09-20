@@ -54,8 +54,14 @@ description: 通过 ClawDot 跑腿网关帮用户叫同城跑腿——帮取送�
 
 ### 地址与下单两步交接（stateless，id 靠 stdout 传递）
 
-- `list_addresses` 列地址簿（回脱敏电话 `138****5678`，不回门牌）；`search_addresses --keyword [--city]` 搜 POI 候选（逐行列给用户挑）；`save_address --address --lat --lng [--contact-phone --detail]` 存址返回 `address_id`（plat_）——存了电话/门牌，下次拿 id 下单不必再问
-- `quote` 返回 `quote_id` + `quotes[]`（`{company_code, company_name, fee, distance, coupon_fee}`）；无偏好取 fee 最小
+- `list_addresses` 列跑腿地址簿（回脱敏电话 `138****5678`；**门牌 detail 原样返回**，改址前要念给用户核对）；
+  `search_addresses --keyword [--city]` 或 `--lat --lng` → `{candidates, saved_matches}`，
+  **先用 saved_matches**（已存过、门牌电话都齐，可直接下单）；
+  `save_address --address --lat --lng [--contact-phone --detail]` 存址返回 `address_id`（plat_）
+  ——存了电话/门牌，下次拿 id 下单不必再问；`update_address` 改址、`delete_address` 删址（不可撤销）
+- `quote` 返回 `quote_id` + `quotes[]`（`{company_code, company_name, fee, distance, coupon_fee,
+  estimated_minutes, estimated_arrival_time}`）；无偏好取 fee 最小，要快则比 estimated_minutes；
+  时效为 null 时别报
 - `create --quote-id <quote_id> --company-code <code>` 返回 `order_id` + `cashier_url` + `status: pending_payment`
 - **金额单位均为分**；后续 `get_order`/`cancel`/`add_tip` 都带 `create` 返回的 `order_id`；付款链接原样发用户
 - **手机号一律脱敏展示**（`138****5678`）：地址簿回的就是脱敏号，原样用别还原；付款链接是唯一不许改的东西

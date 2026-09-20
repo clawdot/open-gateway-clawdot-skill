@@ -116,6 +116,10 @@ v3.0》一致）。全局参数 `--phone` 仅多用户场景需要（单用户�
 --quote-id <id>          quote 返回的 quote_id（单次核销令牌，报价约 10 分钟有效）
 --company-code <码>      选定运力（须在本次 quote 的 quotes[].company_code 内）
 --callback-url <url>     状态回调地址（可选，一般不填）；须公网 http(s)，localhost/内网会被拒
+                         ⚠️ 若自建了回调接收端：**下单当场就会先收到一条 pending_payment**
+                         （可能比本接口的响应更早到），别把"收到回调"当成"已开始配送"；
+                         回调单次投递不重试、可能乱序，按 order_id 幂等 + 用 time 判先后，
+                         真实状态一律以 get_order 为准
 ```
 出参是**整单信息**（可直接摆给用户核对）：除 `order_id / cashier_url / quote_fee` 外，
 还有 `payment_expire_at`（最晚付款时间，自下单起 15 分钟）、`company_name`、`from`/`to`

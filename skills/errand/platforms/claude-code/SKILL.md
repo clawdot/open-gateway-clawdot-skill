@@ -60,12 +60,17 @@ metadata:
 ### 地址
 
 - `list_addresses`（无参数）→ 列该用户已存地址簿（跑腿只能用地址簿里/已选坐标的地址）
-- `search_addresses --keyword "西湖文化广场" [--city "杭州"]` → POI 候选 `[{name, address, lat, lng}]`，**逐行列给用户挑，绝不自动取第一个**
+- `search_addresses --keyword "西湖文化广场" [--city "杭州"]`（或 `--lat --lng` 按当前位置搜）
+  → `{candidates:[{name,address,lat,lng,adcode}], saved_matches:[...]}`。
+  **先看 `saved_matches`**（用户已存过且命中本次搜索的地址，门牌电话都齐，取其 id 可直接下单、
+  不必再问）；为空时才把 `candidates` **逐行列给用户挑，绝不自动取第一个**
 - `save_address --address "..." --lat --lng [--contact-name --contact-phone --detail "1栋502" --tag 家]` → 存进地址簿，返回 `address_id`（plat_）供后续 quote 用。**存了电话/门牌，下次拿这个 id 下单就不用再问用户**
 
 ### 下单两步交接（stateless，id 靠 stdout 传递）
 
-- `quote` 返回 `quote_id` + `quotes[]`（每项 `{company_code, company_name, fee, distance, coupon_fee}`）+ `expires_in_seconds`
+- `quote` 返回 `quote_id` + `quotes[]`（每项 `{company_code, company_name, fee, distance, coupon_fee,
+  estimated_minutes, estimated_arrival_time}`）+ `expires_in_seconds`。后两个是预计时长/送达时刻，
+  可如实报给用户；**为 null（距离未知）时别报时效**
 - 从 `quotes` 选定运力（无偏好取 fee 最小），带其 `company_code` 与 `quote_id` 调 `create`
 - `create --quote-id <quote_id> --company-code <code>` 返回 `order_id` + `cashier_url`（付款链接）+ `status: pending_payment`
 - **金额字段单位均为分**；后续 `get_order`/`cancel`/`add_tip` 都带 `create` 返回的 `order_id`

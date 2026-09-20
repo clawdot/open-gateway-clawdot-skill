@@ -406,14 +406,13 @@ class CredStore:
         return out
 
     def drop(self, phone: str) -> None:
-        """解绑后作废该号的本地缓存——留着只会拿已失效的 cg 一直撞 CONSENT_GRANT_INVALID。"""
+        """解绑后作废**该号**的本地缓存——留着只会拿已失效的 cg 一直撞 CONSENT_GRANT_INVALID。
+
+        刻意只提供单号删除、不提供「清空本指纹」：解绑是不可逆动作，批量清会波及同一
+        API_KEY 下其他用户的有效凭证（他们网关侧还绑着，本地却没了、得重走短信绑定）。
+        """
         bucket = self._data.get(self.fingerprint, {})
         if bucket.pop(phone, None) is not None:
-            self._save()
-
-    def drop_all(self) -> None:
-        """单用户模式解绑：本 API_KEY 指纹下只有一个用户，整格清掉。"""
-        if self._data.pop(self.fingerprint, None) is not None:
             self._save()
 
 
@@ -640,7 +639,8 @@ ERROR_PLAYBOOK: list[tuple[str, str, str, str]] = [
     (r"KEYWORD_REQUIRED|缺.*关键词",
      "KEYWORD_REQUIRED",
      "没给搜索关键词。",
-     "search_addresses 必须带 --keyword。"),
+     "search_addresses 要么给 --keyword（地名），要么给 --lat --lng（按用户当前位置搜）；"
+     "两者至少给一样。"),
 
     # ── 地址服务 ──
     (r"ADDRESS_SEARCH_FAILED|搜索失败",
@@ -970,14 +970,39 @@ def cmd_auth_status(args, gw: MCPClient, config: Config, cg: str, phone: str | N
 
 def cmd_revoke_user_bind(args, gw: MCPClient, config: Config, cg: str,
                          phone: str | None) -> None:
-    result = gw.revoke_bind(cg, reset_history=bool(args.reset_history))
-    # 本地缓存同步作废，否则后续命令会拿着已失效的 cg 一直撞 CONSENT_GRANT_INVALID
+    """解绑。**破坏性且不可逆**（--reset-history 会清退地址簿与历史单），故这里不复用
+    resolve_consent_grant 的宽松兜底：那条路径在「带 --phone 但缓存没命中」时会回落到
+    CONSENT_GRANT_INVALID 环境变量的 cg——读接口顶多读错人，解绑却会把**另一个用户**
+    解掉、甚至不可逆清掉他的地址簿，且现场看不出异常。所以此处要求 cg 与目标身份精确对应。
+    """
     creds = CredStore(config.api_key, config.clawdot_home)
+    bound = creds.all()
     target = normalize_phone(phone) if phone else None
+
+    if target:
+        cached = creds.get(target)
+        if not cached:
+            die(f"手机号 {mask_phone(target)} 在本地没有已绑定记录，不解绑。\n"
+                "（避免误解绑别人：解绑只认本地缓存里这个号自己的凭证，不拿环境变量的 cg 顶替。）\n"
+                "先确认手机号对不对；确实要解绑就用绑定时那台机器/那份缓存。")
+        if cached != cg:
+            die(f"手机号 {mask_phone(target)} 的凭证与本次解析到的不一致，不解绑。\n"
+                "（多半是 CONSENT_GRANT_ID 环境变量顶替了缓存——解绑不接受这种兜底。）")
+        cg = cached
+    else:
+        if len(bound) > 1:
+            die("本地有多个已绑用户，解绑必须用 --phone 指明是哪一个。\n"
+                f"（已绑 {len(bound)} 个号；解绑不可逆，不做猜测。）")
+        if bound and next(iter(bound.values())) != cg:
+            die("本次解析到的凭证与本地唯一已绑用户的不一致，不解绑。\n"
+                "（多半是 CONSENT_GRANT_ID 环境变量顶替了缓存——解绑不接受这种兜底。）")
+        target = next(iter(bound), None)  # 缓存为空=纯 env 预注入模式，无本地凭证可清
+
+    result = gw.revoke_bind(cg, reset_history=bool(args.reset_history))
+    # 网关侧已失效，本地缓存同步作废——留着只会拿废 cg 一直撞 CONSENT_GRANT_INVALID。
+    # 只 drop 实际解绑的那一条，绝不 drop_all（别人的凭证不受牵连）。
     if target:
         creds.drop(target)
-    else:
-        creds.drop_all()
     output(result)
 
 

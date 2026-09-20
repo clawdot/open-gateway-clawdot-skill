@@ -40,7 +40,7 @@
 
 | 情形 | 调用方式 | 凭证从哪来 |
 |---|---|---|
-| **单用户（默认）** | 业务命令不传 `--phone` | 共享缓存中唯一已绑用户的 cg；也可用 `CONSENT_GRANT_ID` 环境变量预注入长效 cg（只读，优先级最高） |
+| **单用户（默认）** | 业务命令不传 `--phone` | 共享缓存中唯一已绑用户的 cg；也可用 `CONSENT_GRANT_ID` 环境变量预注入长效 cg（只读，优先级最高）<br>⚠️ 唯一例外是 `revoke_user_bind`：解绑不可逆，**不接受 env 兜底**，身份有歧义会直接拒绝 |
 | **多用户**（一个安装服务多人） | 业务命令带 `--phone <11位>` | 各用户各自绑定，按手机号存共享缓存 |
 
 **新装 / 未绑定（按脚本返回走，不要自己预判）**：
@@ -277,7 +277,7 @@ list_orders [--limit 5] [--offset N] [--status delivering] [--created-after 2026
   原样再发他一次（不用重新下单）。已支付/已关闭的单这两个字段是 null。
 - **查单/翻页**：`list_orders` 返回 `{orders, next_offset}`——要下一页就把 `next_offset`
   原样当作下次的 `--offset`；为 null 表示没有更多了。
-  用户问"还在跑的单" → `--status dispatching,waiting_rider,rider_accepted,rider_arrived,delivering`；
+  用户问"还在跑的单" → `--status dispatching,pending,waiting_rider,rider_reassigning,rider_accepted,rider_arrived,delivering`；
   问"上个月的单" → `--created-after/--created-before`（写 `2026-08-01`，按北京时间，别自己换时区）。
 - **取件/送达照片**：`pickup_photos` / `finish_photos` 有链接就告诉用户"骑手拍了取件照"并把链接给他。
 - ⚠️ **"还是上次那样"复用历史单**：`goods_category_code` 要**原样带回**（不带会悄悄退回默认品类、

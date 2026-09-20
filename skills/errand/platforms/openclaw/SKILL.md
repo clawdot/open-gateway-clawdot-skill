@@ -61,12 +61,16 @@ metadata:
 ### 地址
 
 - `list_addresses`（无参数）→ 列该用户已存地址簿
-- `search_addresses --keyword "西湖文化广场" [--city "杭州"]` → POI 候选，逐行列给用户挑、绝不自动取第一个
+- `search_addresses --keyword "西湖文化广场" [--city "杭州"]`（或 `--lat --lng` 按当前位置搜）
+  → `{candidates, saved_matches}`。**先看 `saved_matches`**（已存过的地址，门牌电话都齐，
+  取其 id 直接下单、不必再问）；为空时才把 candidates 逐行列给用户挑、绝不自动取第一个
 - `save_address --address "..." --lat --lng [--contact-name --contact-phone --detail --tag]` → 存进地址簿，返回 `address_id`（plat_）。存了电话/门牌，下次拿这个 id 下单不必再问
 
 ### 下单两步交接（stateless，id 靠 stdout 传递）
 
-- `quote` 返回 `quote_id` + `quotes[]`（`{company_code, company_name, fee, distance, coupon_fee}`）；无偏好取 fee 最小
+- `quote` 返回 `quote_id` + `quotes[]`（`{company_code, company_name, fee, distance, coupon_fee,
+  estimated_minutes, estimated_arrival_time}`）；无偏好取 fee 最小，要快则比 estimated_minutes；
+  时效为 null 时别报
 - `create --quote-id <quote_id> --company-code <code>` 返回 `order_id` + `cashier_url` + `status: pending_payment`
 - **金额单位均为分**；后续 `get_order`/`cancel`/`add_tip` 都带 `order_id`；付款链接原样发用户
 

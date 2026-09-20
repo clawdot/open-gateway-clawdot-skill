@@ -3,8 +3,10 @@
 失败时脚本打到 **stderr**：一行中文错误 + 一行 `RECOVERY[CODE]: <下一步>`，退出码非零。
 按 `RECOVERY[CODE]` 选下一步；**不脑补**未出现的错误。
 
-> 本表与网关 errand 面实际会抛的业务码一一对应（`tests/test_errand_cli.py` 的
-> `test_error_playbook_covers_every_gateway_code` 锁死全覆盖：任何一个码没被认领就红）。
+> 本表与网关 errand 面实际会抛的业务码一一对应。`tests/test_errand_cli.py` 的
+> `test_error_playbook_covers_every_gateway_code` 会逐码断言**路由到正确的 RECOVERY 码**
+> （不是"有标签即过"）——但它遍历的是**手写清单** `CODE_EXPECTED_RECOVERY`，
+> 上游文档新增错误码时**不会自动变红**，需要跟文档时手工补进那张表。
 > 表里没有的码 = 脚本原样透出网关文案，此时只跟用户说"暂时不可用"，**禁止编造原因**。
 
 ## 凭据 / 授权
