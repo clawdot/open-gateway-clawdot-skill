@@ -647,6 +647,16 @@ def build_menu_overview(menu: dict, compact: bool = False) -> dict:
         "categories": categories,
         "total_items": menu.get("total_items"),
     }
+    # 概览里**没有任何规格/加料**，只有 has_skus / has_ingredients 两个布尔。
+    # 不点破这件事，模型会拿概览当全量、照着别组的命名规律把选项名编出来
+    # （实测：套餐类被问到规格时直接凭空造「肥牛+羊肉卷」这种组合，用户选了就下不了单）。
+    if any(it.get("has_skus") or it.get("has_ingredients")
+           for c in categories for it in c["top_items"]):
+        result["spec_fetch_hint"] = (
+            "本概览不含规格/加料，只标了哪些商品有（has_skus / has_ingredients）。"
+            "用户点名商品后**必须**先 get_shop_menu --item-id（多商品用 get_item_options）"
+            "拿到真实选项再展示；概览里看不到的选项一个都不许自己写出来。"
+        )
     required_groups = _trim_required_groups(menu)
     if required_groups:
         result["required_groups"] = required_groups
