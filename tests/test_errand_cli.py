@@ -9,7 +9,7 @@
   · CredStore 往返 / 过期。
   · MCP 工具名映射：每个 client 方法调对应的 errand_* 工具、consent 作参数、绑定类不带。
   · resolve_consent_grant 优先级。
-  · argparse：13 子命令都能解析。
+  · argparse：19 子命令都能解析（与文档 v3.0 的 19 个工具 1:1）。
   · 错误 playbook 路由（WRONG_CAP → CONSENT_INVALID、报价过期 → QUOTE_EXPIRED 等）。
 """
 
@@ -123,6 +123,61 @@ def test_tool_name_mapping() -> None:
           "create 透传 quote_id + company_code")
 
 
+def test_v3_tool_mapping() -> None:
+    """v3.0 新增 6 工具 + 既有工具的新参数，逐一钉死出站工具名与关键字段。
+
+    skill 侧写错工具名/字段名不会在本地报错——要到真调网关才炸，所以这里锁死。
+    """
+    print("\n=== v3.0 新工具与新参数 ===")
+    cfg = errand.Config(mcp_url="https://paotui.hicaspian.com/mcp/v1", api_key="clw_k",
+                        consent_grant_id="", setup_url="", timeout_ms=30000,
+                        clawdot_home=Path("/tmp"))
+    gw = errand.MCPClient(cfg)
+    calls: list[tuple[str, dict]] = []
+    gw._call = lambda tool, args: (calls.append((tool, args)) or {"ok": True})  # type: ignore
+
+    gw.get_auth_status("cg_1")
+    gw.revoke_bind("cg_1", reset_history=True)
+    gw.update_address("cg_1", address_id="plat_12", detail="3栋502")
+    gw.delete_address("cg_1", "plat_12")
+    gw.list_goods_categories("cg_1")
+    gw.list_schedule_slots("cg_1")
+
+    names = [c[0] for c in calls]
+    expected = ["errand_get_auth_status", "errand_revoke_user_bind", "errand_update_address",
+                "errand_delete_address", "errand_list_goods_categories",
+                "errand_list_schedule_slots"]
+    check(names == expected, f"6 个新工具名逐一正确：{names}")
+    check(calls[1][1].get("reset_history") is True, "revoke 透传 reset_history")
+    check(calls[2][1].get("address_id") == "plat_12" and calls[2][1].get("detail") == "3栋502",
+          "update_address 透传 address_id + detail")
+
+    # tag="" 是「清空标签」的合法值，不能被当成「没传」丢掉
+    calls.clear()
+    gw.update_address("cg_1", address_id="plat_12", tag="")
+    check(calls[0][1].get("tag") == "", "update_address 保留 tag='' （清空标签，非丢弃）")
+
+    # quote 的 goods_category_code（理赔口径）与 list_orders 的翻页/筛选
+    calls.clear()
+    gw.quote("cg_1", from_address={"address_id": "a"}, to_address={"address_id": "b"},
+             goods=[{"name": "手机", "qty": 1}], goods_category_code=1672215005)
+    check(calls[0][1].get("goods_category_code") == 1672215005,
+          "quote 透传 goods_category_code（理赔只看品类，丢了会退回默认品类）")
+
+    calls.clear()
+    gw.list_orders("cg_1", limit=5, offset=5, status="delivering", created_after="2026-08-01")
+    a = calls[0][1]
+    check(a.get("offset") == 5 and a.get("status") == "delivering"
+          and a.get("created_after") == "2026-08-01",
+          "list_orders 透传 offset/status/created_after")
+
+    # 按位置搜地址（"从我现在的位置"）
+    calls.clear()
+    gw.search_addresses("cg_1", lat=30.29, lng=120.096)
+    check(calls[0][1].get("lat") == 30.29 and calls[0][1].get("lng") == 120.096,
+          "search_addresses 支持只给坐标（按位置反查地点名）")
+
+
 # ── resolve_consent_grant 优先级 ────────────────────────────────────────────
 
 def test_resolve_consent() -> None:
@@ -146,10 +201,10 @@ def test_resolve_consent() -> None:
               "不带 phone 命中唯一已绑用户")
 
 
-# ── argparse：13 子命令 ──────────────────────────────────────────────────────
+# ── argparse：19 子命令（= 文档 v3.0 工具总数）──────────────────────────────
 
 def test_argparse() -> None:
-    print("\n=== argparse：13 子命令都能解析 ===")
+    print("\n=== argparse：19 子命令都能解析 ===")
     parser = errand.build_parser()
     cases = [
         ["request_user_bind", "--phone", "13800000000"],
@@ -166,6 +221,18 @@ def test_argparse() -> None:
         ["pre_cancel", "--order-id", "err_1"],
         ["cancel", "--order-id", "err_1", "--reason", "x"],
         ["add_tip", "--order-id", "err_1", "--tip-fee", "200"],
+        # v3.0 新增 6 个
+        ["auth_status"],
+        ["revoke_user_bind", "--reset-history"],
+        ["update_address", "--address-id", "plat_1", "--detail", "3栋502"],
+        ["delete_address", "--address-id", "plat_1"],
+        ["list_goods_categories"],
+        ["list_schedule_slots"],
+        # v3.0 新参数
+        ["search_addresses", "--lat", "30.29", "--lng", "120.096"],
+        ["list_orders", "--offset", "5", "--status", "delivering"],
+        ["quote", "--from-id", "a", "--to-id", "b", "--goods-name", "手机",
+         "--goods-category-code", "1672215005"],
     ]
     ok = True
     for argv in cases:
@@ -176,7 +243,7 @@ def test_argparse() -> None:
         except SystemExit:
             ok = False
             print(f"      ✗ 解析失败：{argv}")
-    check(ok, "13 子命令全部解析通过")
+    check(ok, f"全部 {len(cases)} 条子命令用例解析通过（覆盖 19 个子命令）")
     # quote 的 store_true 生效
     ns = parser.parse_args(["quote", "--from-id", "a", "--to-id", "b", "--person-direct"])
     check(ns.person_direct is True and ns.insured is False, "quote store_true flag 生效")
@@ -234,7 +301,11 @@ def test_error_playbook() -> None:
     print("\n=== 错误 playbook 路由 ===")
     cases = [
         (errand.GatewayError(200, "CONSENT_GRANT_WRONG_CAP", "wrong cap"), "CONSENT_INVALID"),
-        (errand.GatewayError(200, "PUBLIC_REFERENCE_INVALID", "quote gone"), "QUOTE_EXPIRED"),
+        # v3.0 起该码专指 callback_url 非公网地址（不再是报价失效）
+        (errand.GatewayError(200, "PUBLIC_REFERENCE_INVALID", "bad callback"), "CALLBACK_URL_INVALID"),
+        (errand.GatewayError(200, "QUOTE_INVALID_OR_EXPIRED", "quote gone"), "QUOTE_EXPIRED"),
+        (errand.GatewayError(200, "SCHEDULED_AT_NOT_ON_GRID", "off grid"), "SCHEDULED_AT_NOT_ON_GRID"),
+        (errand.GatewayError(200, "GOODS_PROHIBITED", "禁运"), "GOODS_PROHIBITED"),
         (errand.GatewayError(200, "CAP_NOT_BOUND", "no errand cap"), "CAP_NOT_BOUND"),
         (errand.GatewayError(200, "ERRAND_CROSS_CITY", "跨城"), "ERRAND_CROSS_CITY"),
         (errand.GatewayError(401, "AUTH_INVALID", "bad key"), "API_KEY_INVALID"),
@@ -286,9 +357,26 @@ CODE_EXPECTED_RECOVERY = {
     "SMS_COOLDOWN": "SMS_COOLDOWN",
     "CAP_NOT_BOUND": "CAP_NOT_BOUND",
     "BINDING_LIMIT_REACHED": "BINDING_LIMIT_REACHED",
+    # ── v3.0 新增码（文档「跑腿MCP接口说明文档 v3.0」§12 常见错误码）──
+    "SCHEDULED_AT_INVALID": "SCHEDULED_AT_INVALID",
+    "SCHEDULED_AT_PAST": "SCHEDULED_AT_PAST",
+    "SCHEDULED_AT_NOT_ON_GRID": "SCHEDULED_AT_NOT_ON_GRID",
+    "SCHEDULED_AT_TOO_SOON": "SCHEDULED_AT_TOO_SOON",
+    "SCHEDULED_AT_TOO_FAR": "SCHEDULED_AT_TOO_FAR",
+    "GOODS_PROHIBITED": "GOODS_PROHIBITED",
+    "GOODS_CATEGORY_INVALID": "GOODS_CATEGORY_INVALID",
+    "REMARK_TOO_LONG": "REMARK_TOO_LONG",
+    "ERRAND_STATUS_INVALID": "ERRAND_STATUS_INVALID",
+    "ERRAND_TIME_RANGE_INVALID": "ERRAND_TIME_RANGE_INVALID",
+    "ADDRESS_COORDS_PAIRED": "ADDRESS_COORDS_PAIRED",
+    "ADDRESS_DUPLICATE": "ADDRESS_DUPLICATE",
+    "ADDRESS_UPDATE_EMPTY": "ADDRESS_UPDATE_EMPTY",
+    "ADDRESS_FIELD_TOO_LONG": "ADDRESS_FIELD_TOO_LONG",
     # ── 别名：网关真实码 → 面向用户的归类码 ──
     "QUOTE_INVALID_OR_EXPIRED": "QUOTE_EXPIRED",
-    "PUBLIC_REFERENCE_INVALID": "QUOTE_EXPIRED",
+    # PUBLIC_REFERENCE_INVALID 自 v3.0 起专指 callback_url 非公网地址，**不再**归到
+    # QUOTE_EXPIRED——旧映射会给出"重新询价"这种驴唇不对马嘴的指引
+    "PUBLIC_REFERENCE_INVALID": "CALLBACK_URL_INVALID",
     "CONSENT_GRANT_INVALID": "CONSENT_INVALID",
     "CONSENT_GRANT_REQUIRED": "CONSENT_INVALID",
     "CONSENT_GRANT_WRONG_CAP": "CONSENT_INVALID",
@@ -413,6 +501,7 @@ def main() -> None:
     test_capability_partition()
     test_credstore_roundtrip()
     test_tool_name_mapping()
+    test_v3_tool_mapping()
     test_resolve_consent()
     test_argparse()
     test_endpoint_contact_fallback()

@@ -13,17 +13,33 @@ description: 通过 ClawDot 跑腿网关帮用户叫同城跑腿——帮取送�
 |--------|------|----------|
 | request_user_bind | 绑定第 1 步：发短信验证码（跑腿仅短信模式） | --phone, --external-user-id? |
 | verify_user_bind | 绑定第 2 步：核验码，成功后写共享缓存 | --phone --bind-id --code |
-| list_addresses | 列该手机号名下地址簿（选收发地址） | --phone? |
-| search_addresses | POI 关键词搜地点 → 候选给用户挑（绝不自动取第一个） | --keyword, --city? |
+| auth_status | 查授权是否仍有效（失效不报错，看 bound） | --phone? |
+| revoke_user_bind | 解绑；--reset-history 连地址簿与历史单清退（**不可逆**） | --reset-history? |
+| list_addresses | 列该手机号名下跑腿地址簿（id 恒 plat_；与外卖独立） | --phone? |
+| search_addresses | 搜地点 → candidates + **saved_matches**（已存过的那份可直接下单） | --keyword 或 --lat --lng；--city? |
 | save_address | 把选中的地址存进地址簿复用 | --address --lat --lng, --contact-name? --contact-phone? --detail? --tag? |
-| list_orders | 近几单历史（"还是上次那样"复用收发/物品） | --limit? |
-| quote | 询价：多运力报价 + quote_id（可预约/专人直送/保价） | --goods-name + 每端(--from/to-id 或 --from/to-text/lat/lng)；--goods-price? --weight? --remark? --scheduled-at? --person-direct? --insured? --to-name? --to-phone? |
-| create | 核销 quote_id + 选定运力下单，返回付款链接 | --quote-id --company-code |
-| get_order | 查订单状态/时间线/骑手 | --order-id |
+| update_address | 改地址簿某条（只传要改的；改位置须 address+lat+lng 齐传） | --address-id, --detail? --contact-phone? --tag? … |
+| delete_address | 删地址簿某条（**不可撤销**，先确认） | --address-id |
+| list_goods_categories | 物品品类清单（15 项，前 7 项 valuable=贵重） | 无 |
+| list_schedule_slots | 可预约送达档位（一档 15 分钟） | 无 |
+| list_orders | 历史单 → **{orders, next_offset}**；可筛状态/时间、可翻页 | --limit? --offset? --status? --created-after? --created-before? |
+| quote | 询价：多运力报价（**含预计时效**）+ quote_id | --goods-name + 每端(--from/to-id 或 --from/to-text/lat/lng)；**--goods-category-code?** --goods-price? --weight? --remark? --scheduled-at? --person-direct? --insured? --to-name? --to-phone? |
+| create | 核销 quote_id + 选定运力下单，返回付款链接 + **整单信息** | --quote-id --company-code |
+| get_order | 订单详情/时间线/骑手/照片；未付单还带 cashier_url | --order-id |
 | get_rider | 骑手实时位置（配送中才有） | --order-id |
 | pre_cancel | 取消前查违约金/可退金额 | --order-id |
 | cancel | 取消订单（已付按 实付−违约金 退） | --order-id, --reason? |
 | add_tip | 加小费催单（独立付款链接） | --order-id --tip-fee |
+
+### v3.0 三条硬规则（违反会被网关拒或理赔对不上）
+
+- **预约时间**：只能填 `list_schedule_slots` 返回的 `value`，**绝不自己算时间戳**；
+  即时单不传该参数（别传 0）。复用历史单时不要照抄旧的预约时间（早过期了）。
+- **物品品类**：每单带 `--goods-category-code`（取自 `list_goods_categories`）——
+  **理赔只看品类码、不看物品名**。落在 `valuable=true` 的 7 个贵重品类时，
+  确认品类并**问一句要不要保价**；保价额外收费，**绝不替用户开启**。
+- **禁运校验**：物品名与 `--remark` 都会校验，命中回 `GOODS_PROHIBITED` —— 如实告知
+  用户不能寄，**禁止改词重试绕过**。
 
 ### 鉴权：只需注入 API_KEY，cg 绑定后写入共享缓存
 
