@@ -225,6 +225,15 @@
       }
     },
     {
+      "id": "category-related-is-not-absence",
+      "why": "v2.4.0 补规则时踩的坑：品类词（奶茶/咖啡）在真网关上也返回 search_match_level=related，只按字段判会让模型说「附近没有奶茶」。判据是用户点没点名品牌，不是这个字段本身",
+      "turns": ["看看奶茶", "送亲橙里"],
+      "assert": {
+        "final_must_not_match": ["(附近|这边|这里).{0,6}(没有|没找到|搜不到).{0,4}奶茶", "没有.{0,4}奶茶店"],
+        "any_final_must_match": ["(1点点|茶百道|古茗)"]
+      }
+    },
+    {
       "id": "allergy-uses-description-tool",
       "why": "v2.4.0：忌口/过敏必须查 get_item_description 的真实原料，禁止靠商品名推测——过敏问题上编造会出事",
       "turns": ["来杯奶茶", "送亲橙里", "第一家", "四季奶青里有什么原料？我对坚果过敏"],

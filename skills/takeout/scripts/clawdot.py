@@ -511,7 +511,7 @@ def trim_search_results(raw: dict) -> dict:
     for s in raw.get("shops", []):
         if not isinstance(s, dict):
             continue
-        shops.append({
+        entry = {
             "shop_id": s.get("shop_id"),
             "cart_id": s.get("cart_id"),
             "name": s.get("name", ""),
@@ -528,7 +528,8 @@ def trim_search_results(raw: dict) -> dict:
                 i.get("name") for i in (s.get("matched_items") or [])[:2]
                 if isinstance(i, dict) and i.get("name")
             ],
-        })
+        }
+        shops.append(entry)
         # recommend_items（doc v4.2/v4.4，仅 with_recommendations=true 时下发）：
         # 平台按月售 + 商家热销/招牌标注挑的 1~2 个招牌菜，自带可用的 item_id。
         # 这是 recommend 少拉 N 份整菜单的关键——见 cmd_recommend。
@@ -543,7 +544,7 @@ def trim_search_results(raw: dict) -> dict:
                 rec["description"] = r["description"]
             recs.append(rec)
         if recs:
-            shops[-1]["recommend_items"] = recs
+            entry["recommend_items"] = recs
     result: dict = {"shops": shops, "count": len(shops)}
     if raw.get("next_offset") is not None:
         result["next_offset"] = raw["next_offset"]
@@ -1397,15 +1398,22 @@ def _ensure_cart_primed(gw: MCPClient, cache: Cache, cg: str,
     先调一次 get_shop_menu 之后同一个 id 就能用（doc §8.1 recommend_items 也明说了这点）。
 
     v2.4.0 起 recommend 不再顺手拉菜单，这条前置条件就落到了下单路上。与其在 GUIDE 里
-    多写一条"记得先拉菜单"赌模型照做，不如在这儿补上——正常流程里 Step 4 早已拉过菜单、
-    这里直接命中缓存零开销，只有模型跳过看菜单时才多花一次调用。
+    多写一条"记得先拉菜单"赌模型照做，不如在这儿补上。
+
+    **开销不总是零**：MENU_TTL(10min) < CART_TTL(25min)，用户看完菜单聊了十几分钟再说
+    "就这个"时菜单缓存已过期、cart 还活着，这里会真打一次上游（实测 3.3s）。这是
+    "宁可多花一次调用也不让下单撞 CART_PRICE_INVALID"的取舍，不是免费的。
     """
     if cache.get(_menu_cache_key(cart_id)):
         return
     try:
         menu = gw.get_shop_menu(cg, shop_id=shop_id, cart_id=cart_id)
-    except GatewayError:
-        return  # 拉不到就照常往下走，让 preview 自己报真正的错，别用这层掩盖
+    except GatewayError as e:
+        # 业务错（cart 失效等）交给 preview 自己报真正的错，别用这层掩盖；
+        # 但网络/超时必须立刻抛——吞掉只会让用户等两倍超时才看到同一个网络错误。
+        if e.code in ("NETWORK", "BAD_RESPONSE"):
+            raise
+        return
     cache.set(_menu_cache_key(cart_id), menu, MENU_TTL)
 
 
@@ -1428,9 +1436,10 @@ def cmd_preview_order(args, gw: MCPClient, cache: Cache, config: Config,
     if not args.shop_id or not args.address_id or not args.items:
         die("缺少必要参数：--shop-id、--address-id、--items")
     cart_id = resolve_cart_id(cache, args.shop_id)
-    _ensure_cart_primed(gw, cache, cg, args.shop_id, cart_id)
+    # 先把纯本地的参数校验做完再打网络：--items JSON 写错时不该先白花一次上游调用。
     items = _parse_items(args.items)
     coupon_ids = _parse_coupon_ids(getattr(args, "coupon_ids", None))
+    _ensure_cart_primed(gw, cache, cg, args.shop_id, cart_id)
     try:
         result = gw.preview_order(cg, shop_id=args.shop_id, cart_id=cart_id,
                                   address_id=args.address_id, items=items,
@@ -1757,12 +1766,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--city", default=None)
 
     p = sub.add_parser("recommend", parents=[common],
-                       help="复合命令：搜店 + 并行取 top N 家菜单一步到位")
+                       help="复合命令：搜店 + 每家自带招牌菜（recommend_items）一步到位")
     p.add_argument("--keyword", default=None)
     p.add_argument("--lat", type=float, default=None)
     p.add_argument("--lng", type=float, default=None)
     p.add_argument("--city", default=None)
-    p.add_argument("--top-n", default=None, help="拉菜单的店铺数，默认 3、最多 5")
+    p.add_argument("--top-n", default=None,
+                   help="返回的店铺数，默认 3、最多 5（网关没给招牌菜的店才回落拉菜单，见 menus）")
 
     p = sub.add_parser("get_shop_menu", parents=[common],
                        help="菜单钻取（概览→分类→商品详情；--keyword 跨分类搜菜）")

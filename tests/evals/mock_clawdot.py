@@ -256,34 +256,59 @@ def main() -> None:
         kw = flags.get("keyword", "")
         base = MLT_MENU if False else None  # noqa: F841 - readability
         shops = SHOPS if "麻辣烫" in kw else TEA_SHOPS
+        # search_match_level 两条命令都要给：GUIDE 把品牌名路由到 recommend，
+        # 只在 search_shops 分支算的话，「搜瑞幸」场景根本拿不到这个字段（真 CLI 是给的）。
+        match_level = None
+        if kw:
+            match_level = "exact" if any(
+                kw in s["name"] or kw in (s.get("brand_name") or "")
+                for s in shops["shops"]) else "related"
         if cmd == "search_shops":
             out = dict(shops)
-            # 按店名/品牌搜但本地没有该品牌 → related（返回同品类相似店），
-            # agent 必须如实说"附近没有这家"，不许把相似店当成用户点名的那家。
-            if kw and not any(kw in s["name"] or kw in (s.get("brand_name") or "")
-                              for s in shops["shops"]):
-                out["search_match_level"] = "related"
-            elif kw:
-                out["search_match_level"] = "exact"
+            if match_level:
+                out["search_match_level"] = match_level
             OUT(out)
         else:
             # recommend（v2.4.0）：网关侧直接给招牌菜，不再回落拉整菜单。
             # 招牌菜带真实 item_id/价格，与真 CLI 的 recommend_items 同形。
+            # 价格必须与菜单一致：在一组专门考「不许编数字」的 eval 里喂互相矛盾的
+            # 价格，会让模型的前后不一致变得无法归因。
+            price_of = {i["item_id"]: i["price"]
+                        for m in (TEA_MENU, MLT_MENU) for i in m["items"]}
             recs = {
-                "shop_tea1": [{"item_id": "item_sjnq", "name": "四季奶青", "price": 1900,
-                               "needs_spec_selection": True},
-                              {"item_id": "item_qqmm", "name": "QQ美莓奶茶", "price": 2100,
-                               "needs_spec_selection": True}],
-                "shop_mlt1": [{"item_id": "item_feiniu", "name": "肥牛卷", "price": 900,
-                               "needs_spec_selection": False}],
+                "shop_tea1": [{"item_id": "item_sjnq", "name": "四季奶青",
+                               "price": price_of.get("item_sjnq"), "needs_spec_selection": True},
+                              {"item_id": "item_qqmm", "name": "QQ美莓奶茶",
+                               "price": price_of.get("item_qqmm"), "needs_spec_selection": True}],
+                "shop_mlt1": [{"item_id": "item_feiniu", "name": "肥牛卷",
+                               "price": price_of.get("item_feiniu"), "needs_spec_selection": False}],
+                # shop_tea2 / shop_mlt2… 刻意不给招牌菜：真网关就有这种店，
+                # 回落分支（menus）必须在 eval 里真的被走到，否则那条路没人验过。
             }
-            enriched = []
+            enriched, need_menu = [], []
             for s in shops["shops"]:
                 s2 = dict(s)
                 if recs.get(s["shop_id"]):
                     s2["recommend_items"] = recs[s["shop_id"]]
+                else:
+                    need_menu.append(s2)
                 enriched.append(s2)
-            OUT({"shops": enriched, "count": len(enriched)})
+            out = {"shops": enriched, "count": len(enriched)}
+            if match_level:
+                out["search_match_level"] = match_level
+            if need_menu:
+                base = MLT_MENU if "麻辣烫" in kw else TEA_MENU
+                out["menus"] = [{"shop_id": s["shop_id"], "shop_name": s["name"],
+                                 "available": True,
+                                 "categories": [{"name": c["name"], "item_count": len(c["items"]),
+                                                 "top_items": [
+                                                     {"item_id": i, "name": next(
+                                                         (x["name"] for x in base["items"]
+                                                          if x["item_id"] == i), i)}
+                                                     for i in c["items"][:2]]}
+                                                for c in base["categories"]]}
+                                for s in need_menu]
+            OUT(out)
     elif cmd == "get_shop_info":
         OUT({"shop": {"shop_id": flags.get("shop-id", ""), "name": "1点点(西溪天虹店)",
                       "address": "杭州市余杭区文一西路 969 号", "business_hours": "周一至周日 10:00-22:00",

@@ -558,6 +558,26 @@ def test_revoke_user_bind() -> None:
           out.get("cache_deleted") is True and creds.get("13800008888") is None,
           str(out)[:150])
 
+    # revoked_scopes 必须透出（doc §6.5）：跨能力凭证一次解绑会连带撤销跑腿，
+    # 丢掉它用户只看到"外卖解绑完成"、不知道跑腿也没了。把这行写死成 None 就该红。
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_multi", None)
+    set_tool_response({"revoked": True,
+                       "revoked_scopes": ["taobao_flash.delivery", "dayoudan.errand"]})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config())
+    check("rev.scopes_surfaced",
+          out.get("revoked_scopes") == ["taobao_flash.delivery", "dayoudan.errand"], str(out)[:180])
+    check("rev.multi_cap_warned", "跨能力" in out.get("message", ""), str(out.get("message"))[:180])
+
+    # 单能力时不该冒出"跨能力"这种吓人的措辞
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_single", None)
+    set_tool_response({"revoked": True, "revoked_scopes": ["taobao_flash.delivery"]})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config())
+    check("rev.single_cap_quiet", "跨能力" not in out.get("message", ""), str(out.get("message"))[:180])
+
     # --phone 命中：只清目标用户
     creds = fresh_creds()
     creds.set("13800008888", "cg_a", None)
@@ -781,6 +801,78 @@ def test_coupon_ids_tri_state() -> None:
           str(sent["preview_order"]))
 
 
+def test_coupon_ids_reaches_the_wire() -> None:
+    """三态两端各自测过，**接头没人管**：把 cmd_preview_order 里那行传递删掉
+    （coupon_ids=None 写死），用户说「这单不用券」照样自动用券——线上实测差 ¥8。
+    这是本轮唯一碰钱的新参数，必须有一条端到端断言压着。"""
+    cache = fresh_cache()
+    gw = clawdot.MCPClient(_CFG)
+    cfg = make_config()
+    set_tool_response({"shops": [{"shop_id": "shop_c", "cart_id": "cart_c", "name": "券店"}]})
+    run_ok(clawdot.cmd_search_shops, parse(["search_shops", "--keyword", "x",
+                                            "--lat", "30.1", "--lng", "120.2"]),
+           gw, cache, cfg, "cg_x", None)
+    cache.set(clawdot._menu_cache_key("cart_c"), MENU_PAYLOAD, 600)  # 免得触发 prime
+
+    base = ["preview_order", "--shop-id", "shop_c", "--address-id", "addr_1",
+            "--items", json.dumps([{"item_id": "item_1", "quantity": 1}])]
+    for label, extra, expect in (
+            ("auto", [], None),                              # 不传 → 请求体里不许有这个键
+            ("none", ["--coupon-ids", "none"], []),          # 本单不用券 → 空数组
+            ("pick", ["--coupon-ids", "cp_1,cp_2"], ["cp_1", "cp_2"])):
+        set_tool_response({"preview_id": "prv", "confirmation_token": "cf"})
+        run_ok(clawdot.cmd_preview_order, parse(base + extra), gw, cache, cfg, "cg_x", None)
+        _name, args = rpc_of(last_call())
+        if expect is None:
+            check(f"couponwire.{label}", "coupon_ids" not in args, str(args)[:160])
+        else:
+            check(f"couponwire.{label}", args.get("coupon_ids") == expect, str(args)[:160])
+
+
+def test_recommend_fallback_only_when_needed() -> None:
+    """回落是本轮最大改动的安全网，此前三层（单测/eval/GUIDE）都没碰过它。
+
+    两个方向都要钉死：有招牌菜的店**一份菜单都不许拉**（否则性能收益归零），
+    没招牌菜的店**必须**拿到 menus（否则那家店的导购素材直接消失）。
+    """
+    cache = fresh_cache()
+    gw = clawdot.MCPClient(_CFG)
+    cfg = make_config()
+    set_tool_response({"shops": [
+        {"shop_id": "s_rec", "cart_id": "c_rec", "name": "有招牌菜",
+         "recommend_items": [{"item_id": "i1", "name": "招牌", "price": 1800}]},
+        {"shop_id": "s_bare", "cart_id": "c_bare", "name": "没招牌菜"},
+    ]})
+    # 本断言只关心「拉了哪几家的菜单」，菜单内容不重要——罐头响应保持不变即可。
+    calls_before = len(_CALLS)
+    out = run_ok(clawdot.cmd_recommend, parse(["recommend", "--keyword", "x",
+                                               "--lat", "30.1", "--lng", "120.2"]),
+                 gw, cache, cfg, "cg_x", None)
+    menus = out.get("menus") or []
+    check("fallback.present", len(menus) == 1, str(out)[:200])
+    check("fallback.only_bare", menus and menus[0].get("shop_id") == "s_bare", str(menus)[:200])
+    fetched = [rpc_of(c)[1].get("cart_id") for c in _CALLS[calls_before:]
+               if rpc_of(c)[0] == "get_shop_menu"]
+    check("fallback.no_menu_for_rec_shop", "c_rec" not in fetched, str(fetched))
+
+    # 缓存键必须与裸 search_shops 分开：共用的话 recommend 会命中「不带招牌菜」的
+    # 缓存结果，于是每家都判定要回落、把本轮省下的 N 次菜单调用又全花回去。
+    cache2 = fresh_cache()
+    set_tool_response({"shops": [{"shop_id": "s_rec", "cart_id": "c_rec", "name": "有招牌菜"}]})
+    run_ok(clawdot.cmd_search_shops, parse(["search_shops", "--keyword", "x",
+                                            "--lat", "30.1", "--lng", "120.2"]),
+           gw, cache2, cfg, "cg_x", None)          # 裸搜先把 search: 缓存占上
+    set_tool_response({"shops": [
+        {"shop_id": "s_rec", "cart_id": "c_rec", "name": "有招牌菜",
+         "recommend_items": [{"item_id": "i1", "name": "招牌", "price": 1800}]}]})
+    out2 = run_ok(clawdot.cmd_recommend, parse(["recommend", "--keyword", "x",
+                                                "--lat", "30.1", "--lng", "120.2"]),
+                  gw, cache2, cfg, "cg_x", None)
+    check("fallback.cache_key_isolated",
+          bool(out2["shops"][0].get("recommend_items")) and "menus" not in out2,
+          str(out2)[:200])
+
+
 def test_new_tools_registered() -> None:
     """get_shop_info / get_item_description 要真的挂进命令面，不能只写了函数。"""
     for name in ("get_shop_info", "get_item_description"):
@@ -809,6 +901,8 @@ def main() -> int:
         test_recommend_items_surfaced,
         test_search_shops_switch_is_opt_in,
         test_coupon_ids_tri_state,
+        test_coupon_ids_reaches_the_wire,
+        test_recommend_fallback_only_when_needed,
         test_new_tools_registered,
         test_verify_bind_writes_shared_cache,
         test_cred_store_delete,
