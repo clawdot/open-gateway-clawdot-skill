@@ -84,7 +84,7 @@ TEA_MENU = {
                    {"name": "鲜果茶", "items": ["item_xgc", "item_bmg"]}],
     "items": [
         {"item_id": "item_sjnq", "name": "四季奶青", "price": 1900, "category_name": "奶茶自由配",
-         "description": "茶味经典", "monthly_sales": 800,
+         "description": "茶味经典", "tip_texts": ["月售 800+"],
          "sku_options": [
              {"sku_id": "sku_m", "name": "中杯", "price": 1900, "specs": ["中杯"]},
              {"sku_id": "sku_l", "name": "大杯", "price": 2200, "specs": ["大杯"]},
@@ -106,11 +106,14 @@ TEA_MENU = {
               "selected_by_default": False, "price": 0, "available": True},
          ]},
         {"item_id": "item_qqmm", "name": "QQ美莓奶茶", "price": 2000, "category_name": "奶茶自由配",
-         "description": "招牌果味", "monthly_sales": 600, "sku_options": [], "ingredient_options": []},
+         "description": "招牌果味", "tip_texts": ["月售 600+"],
+         "promo_labels": [{"text": "单点不送"}],  # 可下单性约束：agent 必须提醒要配着点
+         "sku_options": [], "ingredient_options": []},
         {"item_id": "item_xgc", "name": "西瓜果茶", "price": 1800, "category_name": "鲜果茶",
-         "description": "夏日清爽", "monthly_sales": 300, "sku_options": [], "ingredient_options": []},
+         # 刻意不给 tip_texts：没有销量数据时 agent 一个销量数字都不许说
+         "description": "夏日清爽", "sku_options": [], "ingredient_options": []},
         {"item_id": "item_bmg", "name": "白桃芒果茶", "price": 2100, "category_name": "鲜果茶",
-         "description": "果香浓", "monthly_sales": 450, "sku_options": [], "ingredient_options": []},
+         "description": "果香浓", "sku_options": [], "ingredient_options": []},
     ],
     "total_items": 4,
 }
@@ -254,10 +257,44 @@ def main() -> None:
         base = MLT_MENU if False else None  # noqa: F841 - readability
         shops = SHOPS if "麻辣烫" in kw else TEA_SHOPS
         if cmd == "search_shops":
-            OUT(shops)
+            out = dict(shops)
+            # 按店名/品牌搜但本地没有该品牌 → related（返回同品类相似店），
+            # agent 必须如实说"附近没有这家"，不许把相似店当成用户点名的那家。
+            if kw and not any(kw in s["name"] or kw in (s.get("brand_name") or "")
+                              for s in shops["shops"]):
+                out["search_match_level"] = "related"
+            elif kw:
+                out["search_match_level"] = "exact"
+            OUT(out)
         else:
-            menus = [MLT_MENU] if "麻辣烫" in kw else [TEA_MENU]
-            OUT({"shops": shops["shops"], "menus": menus})
+            # recommend（v2.4.0）：网关侧直接给招牌菜，不再回落拉整菜单。
+            # 招牌菜带真实 item_id/价格，与真 CLI 的 recommend_items 同形。
+            recs = {
+                "shop_tea1": [{"item_id": "item_sjnq", "name": "四季奶青", "price": 1900,
+                               "needs_spec_selection": True},
+                              {"item_id": "item_qqmm", "name": "QQ美莓奶茶", "price": 2100,
+                               "needs_spec_selection": True}],
+                "shop_mlt1": [{"item_id": "item_feiniu", "name": "肥牛卷", "price": 900,
+                               "needs_spec_selection": False}],
+            }
+            enriched = []
+            for s in shops["shops"]:
+                s2 = dict(s)
+                if recs.get(s["shop_id"]):
+                    s2["recommend_items"] = recs[s["shop_id"]]
+                enriched.append(s2)
+            OUT({"shops": enriched, "count": len(enriched)})
+    elif cmd == "get_shop_info":
+        OUT({"shop": {"shop_id": flags.get("shop-id", ""), "name": "1点点(西溪天虹店)",
+                      "address": "杭州市余杭区文一西路 969 号", "business_hours": "周一至周日 10:00-22:00",
+                      "is_open_now": True, "rating": 4.6, "delivery_time_text": "26分钟",
+                      "delivery_fee_text": "¥4.4", "min_order_amount": 1500, "tags": ["奶茶"]}})
+    elif cmd == "get_item_description":
+        # 说明卡条目名由商家自定义、不是固定字段；agent 必须原样念，不许按固定名单取值。
+        OUT({"item_id": flags.get("item-id", ""), "name": "四季奶青",
+             "details": [{"label": "原料", "text": "水,茶叶,植脂末,珍珠"},
+                         {"label": "份量", "text": "约473毫升、约592毫升"},
+                         {"label": "是否含咖啡因", "text": "是"}]})
     elif cmd == "get_shop_menu":
         sid = flags.get("shop-id", "")
         menu = MLT_MENU if "mlt" in sid else TEA_MENU

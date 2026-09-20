@@ -14,9 +14,11 @@
 | `search_addresses` | 列出已存地址；带 `--keyword` 搜索新地址 | 无 |
 | `select_address` | 候选/已存地址落成收货地址 | `--sug-ref` 或 `--address-id`；`--contact-name --contact-phone` |
 | `search_shops` | 搜索/浏览附近店铺 | 无（首搜需坐标或 `--city`）|
-| `recommend` | 复合：搜店 + 并行拉 top N 菜单 | 无 |
+| `recommend` | 复合：搜店 + 每家自带招牌菜（`recommend_items`，网关侧挑选） | 无 |
 | `get_shop_menu` | 菜单钻取（概览/分类/单品/搜菜） | `--shop-id` |
 | `get_item_options` | 批量查商品完整规格（含选中标记） | `--shop-id --items` |
+| `get_shop_info` | 店铺详情：营业时间/是否在营业/评分/地址（不含菜单） | `--shop-id` |
+| `get_item_description` | 商品说明卡：原料/份量/口味/做法/咖啡因（忌口、过敏用） | `--shop-id --item-id` |
 | `preview_order` | 预览订单 → `preview_id` + `confirmation_token` | `--shop-id --address-id --items` |
 | `create_order` | 提交订单 → `order_id` + `payment_link` | `--preview-id --confirmation-token` |
 | `get_order_status` | 查询订单状态 | `--order-id` |
@@ -71,8 +73,16 @@
                          "ingredient_quantities":[{"option_id":"opt_shot","quantity":3}],"remark":"少冰"}]
                        （ingredient_quantities=份数型加料，如浓缩x3；勿与 ingredient_option_ids 重复列同一 option）
 --note <str>           (preview_order) 整单备注
+--coupon-ids <str>     (preview_order) 改用指定券（逗号分隔，id 取自上次 preview 的
+                       available_coupons）；传 none=本单不用券；**不传=平台自动选最优券**
 --preview-id / --confirmation-token   (create_order) 均来自 preview_order 返回
 --order-id <str>       (get_order_status)
+```
+
+### get_shop_info / get_item_description
+```
+--shop-id <shop_…>     必填（须先 search_shops/recommend 过这家店，要拿 cart_id）
+--item-id <item_…>     (get_item_description) 必填；说明卡是商品级的，不收 sku_id
 ```
 
 ## 输出契约
