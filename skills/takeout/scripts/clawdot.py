@@ -564,11 +564,15 @@ def _attach_sales_and_promos(dst: dict, item: dict) -> None:
       只由这个文案承载（实测某奶茶店 88 件中 21 件带标、全是「单点不送」）。裁掉它，
       agent 会挑中一个单点下不了单的商品，直到 preview 才撞墙。
     """
-    tips = [t for t in (item.get("tip_texts") or []) if isinstance(t, str)]
+    # 必须先判 list：字符串也是可迭代的，漏掉这层会把 "月售5" 逐字符拆成
+    # ['月','售','5'] 当成三条月售喂给 agent。
+    raw_tips = item.get("tip_texts")
+    tips = [t for t in raw_tips if isinstance(t, str)] if isinstance(raw_tips, list) else []
     if tips:
         dst["tip_texts"] = tips
     promos = []
-    for p in item.get("promo_labels") or []:
+    raw_promos = item.get("promo_labels")
+    for p in raw_promos if isinstance(raw_promos, list) else []:
         if isinstance(p, dict) and p.get("text"):
             subs = [s for s in (p.get("sub_texts") or []) if isinstance(s, str)]
             promos.append({"text": p["text"], "sub_texts": subs} if subs else {"text": p["text"]})

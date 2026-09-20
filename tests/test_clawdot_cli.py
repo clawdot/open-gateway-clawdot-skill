@@ -702,6 +702,14 @@ def test_sales_and_promo_surfaced() -> None:
     check("promo.absent_clean",
           "tip_texts" not in plain and "promo_labels" not in plain, str(plain))
 
+    # 字段类型不对时必须整条丢弃，**不能逐字符迭代**：字符串也是可迭代的，
+    # 少一层 isinstance(list) 就会把 "月售5" 拆成 ['月','售','5'] 当三条月售喂给 agent。
+    for bad in ("月售5", {"a": "b"}, 123):
+        got = clawdot._item_overview({"item_id": "i", "name": "x", "tip_texts": bad,
+                                      "promo_labels": bad})
+        check(f"promo.type_guard:{type(bad).__name__}",
+              "tip_texts" not in got and "promo_labels" not in got, str(got))
+
 
 def test_shop_level_monthly_sales_removed() -> None:
     """店铺级 monthly_sales_text 网关恒为 null（doc §8.1 明写 + 线上 5/5 实测）。
