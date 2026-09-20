@@ -231,10 +231,26 @@ class MCPClient:
     def search_shops(self, cg: str, *, keyword: str | None = None,
                      lat: float | None = None, lng: float | None = None,
                      city: str | None = None, address_id: str | None = None,
-                     offset: int = 0) -> dict:
-        return self._call("search_shops", {
+                     offset: int = 0, with_recommendations: bool = False) -> dict:
+        args = {
             "consent_grant_id": cg, "keyword": keyword, "address_id": address_id,
             "lat": lat, "lng": lng, "city": city, "offset": offset,
+        }
+        # 只在开启时才带上该键：不传时网关响应与开关上线前逐字节一致（doc v4.2 默认 false）。
+        if with_recommendations:
+            args["with_recommendations"] = True
+        return self._call("search_shops", args)
+
+    def get_shop_info(self, cg: str, *, shop_id: str, cart_id: str) -> dict:
+        """店铺本身的信息（营业时间/是否在营业/评分/地址），不含菜单（doc v3.0 §8.7）。"""
+        return self._call("get_shop_info", {
+            "consent_grant_id": cg, "shop_id": shop_id, "cart_id": cart_id,
+        })
+
+    def get_item_description(self, cg: str, *, cart_id: str, item_id: str) -> dict:
+        """商品「说明卡」：原料/份量/口味/做法/是否含咖啡因（doc v3.0 §8.6）。商品级，不收 sku_id。"""
+        return self._call("get_item_description", {
+            "consent_grant_id": cg, "cart_id": cart_id, "item_id": item_id,
         })
 
     def get_shop_menu(self, cg: str, *, shop_id: str, cart_id: str,
@@ -282,11 +298,18 @@ class MCPClient:
 
     def preview_order(self, cg: str, *, shop_id: str, cart_id: str,
                       address_id: str, items: list[dict],
-                      order_remark: str = "") -> dict:
-        return self._call("preview_order", {
+                      order_remark: str = "",
+                      coupon_ids: list[str] | None = None) -> dict:
+        args = {
             "consent_grant_id": cg, "shop_id": shop_id, "cart_id": cart_id,
             "address_id": address_id, "items": items, "order_remark": order_remark,
-        })
+        }
+        # coupon_ids 三态（doc §10.1 + FAQ）：不传＝平台按默认策略自动选最优券；
+        # 传空数组＝本单不用券；传具体 id＝改用指定券。**只有显式指定时才带这个键**，
+        # 否则会把"默认自动用券"误变成"不用券"。
+        if coupon_ids is not None:
+            args["coupon_ids"] = coupon_ids
+        return self._call("preview_order", args)
 
     def create_order(self, cg: str, *, preview_id: str, confirmation_token: str,
                      payment_method: str | None = None) -> dict:
@@ -488,7 +511,7 @@ def trim_search_results(raw: dict) -> dict:
     for s in raw.get("shops", []):
         if not isinstance(s, dict):
             continue
-        shops.append({
+        entry = {
             "shop_id": s.get("shop_id"),
             "cart_id": s.get("cart_id"),
             "name": s.get("name", ""),
@@ -498,7 +521,6 @@ def trim_search_results(raw: dict) -> dict:
             "delivery_time": s.get("delivery_time_text"),
             "min_order_amount": s.get("min_order_amount"),
             "distance": s.get("distance_text"),
-            "monthly_sales": s.get("monthly_sales_text"),
             "available": s.get("available", True),
             "unavailable_reason": s.get("unavailable_reason"),
             "tags": s.get("tags") or [],
@@ -506,7 +528,23 @@ def trim_search_results(raw: dict) -> dict:
                 i.get("name") for i in (s.get("matched_items") or [])[:2]
                 if isinstance(i, dict) and i.get("name")
             ],
-        })
+        }
+        shops.append(entry)
+        # recommend_items（doc v4.2/v4.4，仅 with_recommendations=true 时下发）：
+        # 平台按月售 + 商家热销/招牌标注挑的 1~2 个招牌菜，自带可用的 item_id。
+        # 这是 recommend 少拉 N 份整菜单的关键——见 cmd_recommend。
+        recs = []
+        for r in s.get("recommend_items") or []:
+            if not isinstance(r, dict) or not r.get("item_id"):
+                continue
+            rec = {"item_id": r["item_id"], "name": r.get("name"),
+                   "price": r.get("price"),
+                   "needs_spec_selection": bool(r.get("needs_spec_selection"))}
+            if r.get("description"):
+                rec["description"] = r["description"]
+            recs.append(rec)
+        if recs:
+            entry["recommend_items"] = recs
     result: dict = {"shops": shops, "count": len(shops)}
     if raw.get("next_offset") is not None:
         result["next_offset"] = raw["next_offset"]
@@ -517,8 +555,34 @@ def trim_search_results(raw: dict) -> dict:
     return result
 
 
+def _attach_sales_and_promos(dst: dict, item: dict) -> None:
+    """把月售与促销标带进裁剪结果——这两样 agent 真会拿去跟用户说。
+
+    - `tip_texts`（doc v3.0）：**商品级**月售，如 ["月售 1000+"]。店铺级
+      `monthly_sales_text` 文档明写「当前恒为 null」（实测 5/5 null），所以推荐理由里
+      的月售只能取这里。不透出＝GUIDE 要求写月售、模型却无处可取，只能编。
+    - `promo_labels`（doc v2.3）：不止是营销装饰——「单点不送」这类**可下单性约束**
+      只由这个文案承载（实测某奶茶店 88 件中 21 件带标、全是「单点不送」）。裁掉它，
+      agent 会挑中一个单点下不了单的商品，直到 preview 才撞墙。
+    """
+    # 必须先判 list：字符串也是可迭代的，漏掉这层会把 "月售5" 逐字符拆成
+    # ['月','售','5'] 当成三条月售喂给 agent。
+    raw_tips = item.get("tip_texts")
+    tips = [t for t in raw_tips if isinstance(t, str)] if isinstance(raw_tips, list) else []
+    if tips:
+        dst["tip_texts"] = tips
+    promos = []
+    raw_promos = item.get("promo_labels")
+    for p in raw_promos if isinstance(raw_promos, list) else []:
+        if isinstance(p, dict) and p.get("text"):
+            subs = [s for s in (p.get("sub_texts") or []) if isinstance(s, str)]
+            promos.append({"text": p["text"], "sub_texts": subs} if subs else {"text": p["text"]})
+    if promos:
+        dst["promo_labels"] = promos
+
+
 def _item_overview(item: dict) -> dict:
-    return {
+    overview = {
         "item_id": item.get("item_id"),
         "name": item.get("name"),
         "price": item.get("price"),
@@ -526,6 +590,8 @@ def _item_overview(item: dict) -> dict:
         "has_skus": len(item.get("sku_options") or []) > 0,
         "has_ingredients": len(item.get("ingredient_options") or []) > 0,
     }
+    _attach_sales_and_promos(overview, item)
+    return overview
 
 
 def _trim_required_groups(menu: dict) -> list[dict]:
@@ -586,6 +652,16 @@ def build_menu_overview(menu: dict, compact: bool = False) -> dict:
         "categories": categories,
         "total_items": menu.get("total_items"),
     }
+    # 概览里**没有任何规格/加料**，只有 has_skus / has_ingredients 两个布尔。
+    # 不点破这件事，模型会拿概览当全量、照着别组的命名规律把选项名编出来
+    # （实测：套餐类被问到规格时直接凭空造「肥牛+羊肉卷」这种组合，用户选了就下不了单）。
+    if any(it.get("has_skus") or it.get("has_ingredients")
+           for c in categories for it in c["top_items"]):
+        result["spec_fetch_hint"] = (
+            "本概览不含规格/加料，只标了哪些商品有（has_skus / has_ingredients）。"
+            "用户点名商品后**必须**先 get_shop_menu --item-id（多商品用 get_item_options）"
+            "拿到真实选项再展示；概览里看不到的选项一个都不许自己写出来。"
+        )
     required_groups = _trim_required_groups(menu)
     if required_groups:
         result["required_groups"] = required_groups
@@ -642,6 +718,7 @@ def build_item_detail(item: dict) -> dict:
         "category_name": item.get("category_name"),
         "description": item.get("description"),
     }
+    _attach_sales_and_promos(detail, item)
     # min_purchase (doc v1.7): 起购份数，≥1（1=无约束）。>1 时下单 quantity 必须达标，
     # 否则 preview 报 BELOW_MIN_PURCHASE——提前透出让 agent 把量提够。
     min_purchase = item.get("min_purchase")
@@ -1034,17 +1111,29 @@ def cmd_search_shops(args, gw: MCPClient, cache: Cache, config: Config,
 
 def cmd_recommend(args, gw: MCPClient, cache: Cache, config: Config,
                   cg: str, phone: str | None) -> None:
-    """复合命令：搜店 + 并行取 top N 家菜单一步到位。返回 {"shops": [...], "menus": [...]}。"""
+    """复合命令：搜店 + 每家带招牌菜，一步到位。
+
+    doc v4.2 起 `search_shops(with_recommendations=true)` 由平台按月售与商家热销/招牌标注
+    直接挑出每店 1~2 个招牌菜（自带可下单的 item_id），一次调用就够 Step 3 导购用。
+    此前本命令要再并行拉 top N 份**整菜单**才凑得出推荐话术——实测 6.38s vs 2.0~3.2s，
+    且平台挑的招牌菜比"每个分类取前两件"更贴近真实热销。
+
+    网关没给招牌菜的店（少数商家没标热销）**回落到老路径**：并行拉那几家的菜单概览，
+    保证导购素材不会比改动前少。返回里的 `menus` 仅在发生回落时出现。
+    """
     lat, lng = _resolve_lat_lng(args, cache, config, phone)
     try:
         top_n = min(int(args.top_n or 3), 5)
     except (TypeError, ValueError):
         top_n = 3
 
-    search_cache_key = f"search:{lat},{lng},{args.keyword or 'default'}"
+    # 缓存键带上开关：与 search_shops（不带招牌菜）的缓存分开存，
+    # 否则 recommend 命中裸搜的缓存会恒定走回落、白拉菜单。
+    search_cache_key = f"search:rec:{lat},{lng},{args.keyword or 'default'}"
     trimmed = cache.get(search_cache_key)
     if not trimmed:
-        raw = gw.search_shops(cg, keyword=args.keyword, lat=lat, lng=lng, city=args.city)
+        raw = gw.search_shops(cg, keyword=args.keyword, lat=lat, lng=lng, city=args.city,
+                              with_recommendations=True)
         trimmed = trim_search_results(raw)
         remember_carts(cache, trimmed["shops"])
         cache.set(search_cache_key, trimmed, SEARCH_TTL)
@@ -1067,14 +1156,16 @@ def cmd_recommend(args, gw: MCPClient, cache: Cache, config: Config,
         overview["shop_id"] = sid
         return overview
 
-    from concurrent.futures import ThreadPoolExecutor
-    if top_shops:
-        with ThreadPoolExecutor(max_workers=max(1, len(top_shops))) as pool:
-            menus = list(pool.map(_fetch_menu, top_shops))
-    else:
-        menus = []
-
-    output({"shops": top_shops, "menus": menus})
+    # 只给没拿到招牌菜的店补菜单——有招牌菜的店一份菜单都不用拉。
+    need_menu = [s for s in top_shops if not s.get("recommend_items")]
+    result: dict = {"shops": top_shops, "count": len(top_shops)}
+    if need_menu:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(1, len(need_menu))) as pool:
+            result["menus"] = list(pool.map(_fetch_menu, need_menu))
+    if trimmed.get("search_match_level"):
+        result["search_match_level"] = trimmed["search_match_level"]
+    output(result)
 
 
 def cmd_get_shop_menu(args, gw: MCPClient, cache: Cache, config: Config,
@@ -1114,6 +1205,46 @@ def cmd_get_shop_menu(args, gw: MCPClient, cache: Cache, config: Config,
         return
 
     output(build_menu_overview(menu))
+
+
+def cmd_get_shop_info(args, gw: MCPClient, cache: Cache, config: Config,
+                      cg: str, phone: str | None) -> None:
+    """店铺详情（营业时间/是否在营业/评分/地址），不含菜单。~0.6s，比拉整份菜单快得多。"""
+    if not args.shop_id:
+        die("缺少 --shop-id 参数。")
+    cart_id = resolve_cart_id(cache, args.shop_id)
+    try:
+        result = gw.get_shop_info(cg, shop_id=args.shop_id, cart_id=cart_id)
+    except GatewayError as e:
+        die(friendly_error(e, {"shop_id": args.shop_id}))
+        return
+    shop = result.get("shop") if isinstance(result.get("shop"), dict) else None
+    # is_open_now=null 表示营业时间文本没解析出来，**不是**"已打烊"（doc §8.7 明确）。
+    # 不带这句提示，模型极易把 null 当 false 直接跟用户说"这家关门了"。
+    if shop is not None and shop.get("is_open_now") is None:
+        result["open_state_hint"] = (
+            "is_open_now 为 null＝营业时间文本无法解析，**不代表已打烊**："
+            "把 business_hours 原样告诉用户，别替它下结论。"
+        )
+    output(result)
+
+
+def cmd_get_item_description(args, gw: MCPClient, cache: Cache, config: Config,
+                             cg: str, phone: str | None) -> None:
+    """商品说明卡：原料/份量/口味/做法/是否含咖啡因。忌口、过敏、"够几个人吃"用它。"""
+    if not args.shop_id or not args.item_id:
+        die("缺少必要参数：--shop-id、--item-id")
+    cart_id = resolve_cart_id(cache, args.shop_id)
+    try:
+        result = gw.get_item_description(cg, cart_id=cart_id, item_id=args.item_id)
+    except GatewayError as e:
+        die(friendly_error(e, {"shop_id": args.shop_id}))
+        return
+    details = result.get("details")
+    if isinstance(details, list) and not details:
+        # 空数组＝这家商家没填说明卡，是正常状态，不是查询失败——如实告知即可，别重试。
+        result["empty_hint"] = "这家商家没填商品详情说明卡。如实告诉用户即可，不要重试、不要靠商品名猜原料。"
+    output(result)
 
 
 def cmd_get_item_options(args, gw: MCPClient, cache: Cache, config: Config,
@@ -1258,16 +1389,62 @@ def _parse_items(raw_items: str) -> list[dict]:
     return items
 
 
+def _ensure_cart_primed(gw: MCPClient, cache: Cache, cg: str,
+                        shop_id: str, cart_id: str) -> None:
+    """算价/下单前确保这个 cart 已经装载过菜单。
+
+    `search_shops(with_recommendations=true)` 给的招牌菜 `item_id` 在**没拉过菜单的 cart 上
+    不能算价**——线上实测直接 quote 报 `CART_PRICE_INVALID: tb_store_id is required`，
+    先调一次 get_shop_menu 之后同一个 id 就能用（doc §8.1 recommend_items 也明说了这点）。
+
+    v2.4.0 起 recommend 不再顺手拉菜单，这条前置条件就落到了下单路上。与其在 GUIDE 里
+    多写一条"记得先拉菜单"赌模型照做，不如在这儿补上。
+
+    **开销不总是零**：MENU_TTL(10min) < CART_TTL(25min)，用户看完菜单聊了十几分钟再说
+    "就这个"时菜单缓存已过期、cart 还活着，这里会真打一次上游（实测 3.3s）。这是
+    "宁可多花一次调用也不让下单撞 CART_PRICE_INVALID"的取舍，不是免费的。
+    """
+    if cache.get(_menu_cache_key(cart_id)):
+        return
+    try:
+        menu = gw.get_shop_menu(cg, shop_id=shop_id, cart_id=cart_id)
+    except GatewayError as e:
+        # 业务错（cart 失效等）交给 preview 自己报真正的错，别用这层掩盖；
+        # 但网络/超时必须立刻抛——吞掉只会让用户等两倍超时才看到同一个网络错误。
+        if e.code in ("NETWORK", "BAD_RESPONSE"):
+            raise
+        return
+    cache.set(_menu_cache_key(cart_id), menu, MENU_TTL)
+
+
+def _parse_coupon_ids(raw: str | None) -> list[str] | None:
+    """--coupon-ids 三态：不给→None（平台自动选最优券）；`none`→[]（本单不用券）；
+    逗号分隔的 id→指定券。返回 None 与返回 [] 语义完全不同，别合并。"""
+    if raw is None:
+        return None
+    text = raw.strip()
+    if text.lower() in ("none", "no", "不用券"):
+        return []
+    ids = [c.strip() for c in text.split(",") if c.strip()]
+    if not ids:
+        die('--coupon-ids 不能是空串；不用券传 `none`，不传则由平台自动选最优券。')
+    return ids
+
+
 def cmd_preview_order(args, gw: MCPClient, cache: Cache, config: Config,
                       cg: str, phone: str | None) -> None:
     if not args.shop_id or not args.address_id or not args.items:
         die("缺少必要参数：--shop-id、--address-id、--items")
     cart_id = resolve_cart_id(cache, args.shop_id)
+    # 先把纯本地的参数校验做完再打网络：--items JSON 写错时不该先白花一次上游调用。
     items = _parse_items(args.items)
+    coupon_ids = _parse_coupon_ids(getattr(args, "coupon_ids", None))
+    _ensure_cart_primed(gw, cache, cg, args.shop_id, cart_id)
     try:
         result = gw.preview_order(cg, shop_id=args.shop_id, cart_id=cart_id,
                                   address_id=args.address_id, items=items,
-                                  order_remark=args.note or "")
+                                  order_remark=args.note or "",
+                                  coupon_ids=coupon_ids)
     except GatewayError as e:
         die(friendly_error(e, {"shop_id": args.shop_id, "address_id": args.address_id}))
         return
@@ -1455,11 +1632,12 @@ def cmd_revoke_user_bind(args, gw: MCPClient, creds: CredStore, config: Config) 
 
     server_state = "revoked"
     try:
-        gw.revoke_bind(cg)
+        revoke_result = gw.revoke_bind(cg)
     except GatewayError as e:
         # 该 cg 在服务端已失效（已撤销/过期/轮换）→ 目的已达成，继续清本地
         if str(e.code).startswith("CONSENT") or e.code == "AUTH_REQUIRED":
             server_state = "already_invalid"
+            revoke_result = {}
         else:
             die(f"解绑失败：{friendly_error(e, {'phone': phone or '<11位手机号>'})}")
             return
@@ -1472,6 +1650,16 @@ def cmd_revoke_user_bind(args, gw: MCPClient, creds: CredStore, config: Config) 
         "cache_deleted": cache_deleted,
         "message": "解绑完成。用户的地址和订单历史在服务端保留，重新绑定同一手机号即可恢复使用。",
     }
+    # revoked_scopes（doc §6.5）：跨能力互通的客户外卖与跑腿共用一枚 cg，解绑会**一并撤销**。
+    # 此前这个返回值被整个丢弃，用户只看到"解绑完成"、不知道跑腿也一起没了。
+    scopes = revoke_result.get("revoked_scopes") if isinstance(revoke_result, dict) else None
+    if isinstance(scopes, list) and scopes:
+        out["revoked_scopes"] = scopes
+        if len(scopes) > 1:
+            out["message"] += (
+                f" 注意：这枚凭证是跨能力授权，本次一并撤销了 {len(scopes)} 个能力"
+                f"（{'、'.join(str(s) for s in scopes)}）——请如实告诉用户，别只说外卖解绑了。"
+            )
     if warning:
         out["warning"] = warning
     output(out)
@@ -1508,6 +1696,8 @@ COMMANDS = {
     "recommend": cmd_recommend,
     "get_shop_menu": cmd_get_shop_menu,
     "get_item_options": cmd_get_item_options,
+    "get_shop_info": cmd_get_shop_info,
+    "get_item_description": cmd_get_item_description,
     "search_addresses": cmd_search_addresses,
     "select_address": cmd_select_address,
     "preview_order": cmd_preview_order,
@@ -1576,12 +1766,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--city", default=None)
 
     p = sub.add_parser("recommend", parents=[common],
-                       help="复合命令：搜店 + 并行取 top N 家菜单一步到位")
+                       help="复合命令：搜店 + 每家自带招牌菜（recommend_items）一步到位")
     p.add_argument("--keyword", default=None)
     p.add_argument("--lat", type=float, default=None)
     p.add_argument("--lng", type=float, default=None)
     p.add_argument("--city", default=None)
-    p.add_argument("--top-n", default=None, help="拉菜单的店铺数，默认 3、最多 5")
+    p.add_argument("--top-n", default=None,
+                   help="返回的店铺数，默认 3、最多 5（网关没给招牌菜的店才回落拉菜单，见 menus）")
 
     p = sub.add_parser("get_shop_menu", parents=[common],
                        help="菜单钻取（概览→分类→商品详情；--keyword 跨分类搜菜）")
@@ -1596,6 +1787,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--items", required=True,
                    help='JSON array：[{"item_id":"item_x","sku_id":"sku_y","ingredient_option_ids":["opt_z"]}]')
 
+    p = sub.add_parser("get_shop_info", parents=[common],
+                       help="店铺详情：营业时间/是否在营业/评分/地址（不含菜单，比拉菜单快）")
+    p.add_argument("--shop-id", required=True)
+
+    p = sub.add_parser("get_item_description", parents=[common],
+                       help="商品说明卡：原料/份量/口味/做法/是否含咖啡因（忌口、过敏、份量问题用它）")
+    p.add_argument("--shop-id", required=True)
+    p.add_argument("--item-id", required=True)
+
     p = sub.add_parser("preview_order", parents=[common],
                        help="预览订单（价格、配送费、优惠），返回 preview_id + confirmation_token")
     p.add_argument("--shop-id", required=True)
@@ -1605,6 +1805,9 @@ def build_parser() -> argparse.ArgumentParser:
                         '"ingredient_option_ids":["opt_z"],'
                         '"ingredient_quantities":[{"option_id":"opt_shot","quantity":3}],"remark":"少冰"}]'
                         '（份数型加料如浓缩 x3 用 ingredient_quantities，别再列进 ingredient_option_ids）')
+    p.add_argument("--coupon-ids", default=None,
+                   help="改用指定优惠券（逗号分隔，id 取自上一次 preview 的 available_coupons）；"
+                        "传 none 表示本单不用券；**不传＝平台自动选最优券**（默认，别乱传）")
     p.add_argument("--note", default=None, help="订单备注（order_remark）")
 
     p = sub.add_parser("create_order", parents=[common],

@@ -558,6 +558,26 @@ def test_revoke_user_bind() -> None:
           out.get("cache_deleted") is True and creds.get("13800008888") is None,
           str(out)[:150])
 
+    # revoked_scopes 必须透出（doc §6.5）：跨能力凭证一次解绑会连带撤销跑腿，
+    # 丢掉它用户只看到"外卖解绑完成"、不知道跑腿也没了。把这行写死成 None 就该红。
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_multi", None)
+    set_tool_response({"revoked": True,
+                       "revoked_scopes": ["taobao_flash.delivery", "dayoudan.errand"]})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config())
+    check("rev.scopes_surfaced",
+          out.get("revoked_scopes") == ["taobao_flash.delivery", "dayoudan.errand"], str(out)[:180])
+    check("rev.multi_cap_warned", "跨能力" in out.get("message", ""), str(out.get("message"))[:180])
+
+    # 单能力时不该冒出"跨能力"这种吓人的措辞
+    creds = fresh_creds()
+    creds.set("13800008888", "cg_single", None)
+    set_tool_response({"revoked": True, "revoked_scopes": ["taobao_flash.delivery"]})
+    out = run_ok(clawdot.cmd_revoke_user_bind, parse(["revoke_user_bind"]),
+                 gw, creds, make_config())
+    check("rev.single_cap_quiet", "跨能力" not in out.get("message", ""), str(out.get("message"))[:180])
+
     # --phone 命中：只清目标用户
     creds = fresh_creds()
     creds.set("13800008888", "cg_a", None)
@@ -682,6 +702,186 @@ def test_search_match_level() -> None:
     check("sml.absent_clean", "search_match_level" not in trimmed, str(trimmed))
 
 
+def test_sales_and_promo_surfaced() -> None:
+    """月售与促销标必须到达 agent——GUIDE 要求它说月售、要求它避开「单点不送」，
+    数据被裁掉就等于逼它编（v2.2.2 的教训：禁止编造的前提是真值真的出现在输出里）。"""
+    item = {"item_id": "i1", "name": "杨枝甘露", "price": 1800,
+            "tip_texts": ["月售 800+"],
+            "promo_labels": [{"text": "单点不送", "sub_texts": []},
+                             {"text": "8.5折", "sub_texts": ["限1份"]}]}
+    for label, built in (("overview", clawdot._item_overview(item)),
+                         ("detail", clawdot.build_item_detail(item))):
+        check(f"promo.{label}.tips", built.get("tip_texts") == ["月售 800+"], str(built))
+        texts = [p["text"] for p in built.get("promo_labels", [])]
+        check(f"promo.{label}.blocking", "单点不送" in texts, str(built))
+        # sub_texts（"限1份"）是限制条件，丢了会让 agent 把限量券说成无条件折扣
+        sub = [p for p in built.get("promo_labels", []) if p["text"] == "8.5折"]
+        check(f"promo.{label}.sub_texts", sub and sub[0].get("sub_texts") == ["限1份"], str(built))
+    # 没有这两个字段的商品，输出不多出空键
+    plain = clawdot._item_overview({"item_id": "i2", "name": "美式", "price": 1200})
+    check("promo.absent_clean",
+          "tip_texts" not in plain and "promo_labels" not in plain, str(plain))
+
+    # 字段类型不对时必须整条丢弃，**不能逐字符迭代**：字符串也是可迭代的，
+    # 少一层 isinstance(list) 就会把 "月售5" 拆成 ['月','售','5'] 当三条月售喂给 agent。
+    for bad in ("月售5", {"a": "b"}, 123):
+        got = clawdot._item_overview({"item_id": "i", "name": "x", "tip_texts": bad,
+                                      "promo_labels": bad})
+        check(f"promo.type_guard:{type(bad).__name__}",
+              "tip_texts" not in got and "promo_labels" not in got, str(got))
+
+
+def test_shop_level_monthly_sales_removed() -> None:
+    """店铺级 monthly_sales_text 网关恒为 null（doc §8.1 明写 + 线上 5/5 实测）。
+    留着这个恒 null 的键，GUIDE 的「说月售」规则就会指向一个永远没值的字段。"""
+    trimmed = clawdot.trim_search_results({
+        "shops": [{"shop_id": "s1", "cart_id": "c1", "name": "某店",
+                   "monthly_sales_text": None}]})
+    check("shopsales.dropped", "monthly_sales" not in trimmed["shops"][0],
+          str(trimmed["shops"][0]))
+
+
+def test_recommend_items_surfaced() -> None:
+    """with_recommendations 的招牌菜是 recommend 少拉 N 份菜单的全部依据，必须带 item_id。"""
+    trimmed = clawdot.trim_search_results({"shops": [{
+        "shop_id": "s1", "cart_id": "c1", "name": "茶百道",
+        "recommend_items": [
+            {"item_id": "item_a", "name": "杨枝甘露", "price": 1800,
+             "needs_spec_selection": True, "description": "真芒果"},
+            {"item_id": None, "name": "脏数据"},          # 无 item_id → 丢弃
+        ]}]})
+    recs = trimmed["shops"][0].get("recommend_items")
+    check("rec.kept_one", recs is not None and len(recs) == 1, str(recs))
+    check("rec.item_id", recs[0]["item_id"] == "item_a", str(recs))
+    check("rec.needs_spec", recs[0]["needs_spec_selection"] is True, str(recs))
+    # 网关没给招牌菜时不产生空键——cmd_recommend 靠这个键判断要不要回落拉菜单
+    plain = clawdot.trim_search_results({"shops": [{"shop_id": "s", "cart_id": "c", "name": "x"}]})
+    check("rec.absent_clean", "recommend_items" not in plain["shops"][0], str(plain))
+
+
+def test_search_shops_switch_is_opt_in() -> None:
+    """负向红线：不开开关时请求体里不许出现 with_recommendations（默认行为逐字节不变）。"""
+    sent = {}
+
+    class _GW(clawdot.MCPClient):
+        def __init__(self): pass
+        def _call(self, tool, args):
+            sent[tool] = args
+            return {"shops": []}
+
+    _GW().search_shops("cg_x", keyword="奶茶")
+    check("switch.absent", "with_recommendations" not in sent["search_shops"],
+          str(sent["search_shops"]))
+    _GW().search_shops("cg_x", keyword="奶茶", with_recommendations=True)
+    check("switch.present", sent["search_shops"].get("with_recommendations") is True,
+          str(sent["search_shops"]))
+
+
+def test_coupon_ids_tri_state() -> None:
+    """coupon_ids 三态不能塌成两态：不传＝平台自动选最优券，传空数组＝本单不用券。
+    把「不传」写成「传 []」会静默取消用户本该拿到的优惠。"""
+    check("coupon.none_is_auto", clawdot._parse_coupon_ids(None) is None, "None")
+    check("coupon.explicit_none", clawdot._parse_coupon_ids("none") == [], "none")
+    check("coupon.list", clawdot._parse_coupon_ids("cp_1, cp_2") == ["cp_1", "cp_2"], "list")
+
+    sent = {}
+
+    class _GW(clawdot.MCPClient):
+        def __init__(self): pass
+        def _call(self, tool, args):
+            sent[tool] = args
+            return {}
+
+    _GW().preview_order("cg", shop_id="s", cart_id="c", address_id="a", items=[])
+    check("coupon.key_absent_by_default", "coupon_ids" not in sent["preview_order"],
+          str(sent["preview_order"]))
+    _GW().preview_order("cg", shop_id="s", cart_id="c", address_id="a", items=[],
+                        coupon_ids=[])
+    check("coupon.empty_list_sent", sent["preview_order"].get("coupon_ids") == [],
+          str(sent["preview_order"]))
+
+
+def test_coupon_ids_reaches_the_wire() -> None:
+    """三态两端各自测过，**接头没人管**：把 cmd_preview_order 里那行传递删掉
+    （coupon_ids=None 写死），用户说「这单不用券」照样自动用券——线上实测差 ¥8。
+    这是本轮唯一碰钱的新参数，必须有一条端到端断言压着。"""
+    cache = fresh_cache()
+    gw = clawdot.MCPClient(_CFG)
+    cfg = make_config()
+    set_tool_response({"shops": [{"shop_id": "shop_c", "cart_id": "cart_c", "name": "券店"}]})
+    run_ok(clawdot.cmd_search_shops, parse(["search_shops", "--keyword", "x",
+                                            "--lat", "30.1", "--lng", "120.2"]),
+           gw, cache, cfg, "cg_x", None)
+    cache.set(clawdot._menu_cache_key("cart_c"), MENU_PAYLOAD, 600)  # 免得触发 prime
+
+    base = ["preview_order", "--shop-id", "shop_c", "--address-id", "addr_1",
+            "--items", json.dumps([{"item_id": "item_1", "quantity": 1}])]
+    for label, extra, expect in (
+            ("auto", [], None),                              # 不传 → 请求体里不许有这个键
+            ("none", ["--coupon-ids", "none"], []),          # 本单不用券 → 空数组
+            ("pick", ["--coupon-ids", "cp_1,cp_2"], ["cp_1", "cp_2"])):
+        set_tool_response({"preview_id": "prv", "confirmation_token": "cf"})
+        run_ok(clawdot.cmd_preview_order, parse(base + extra), gw, cache, cfg, "cg_x", None)
+        _name, args = rpc_of(last_call())
+        if expect is None:
+            check(f"couponwire.{label}", "coupon_ids" not in args, str(args)[:160])
+        else:
+            check(f"couponwire.{label}", args.get("coupon_ids") == expect, str(args)[:160])
+
+
+def test_recommend_fallback_only_when_needed() -> None:
+    """回落是本轮最大改动的安全网，此前三层（单测/eval/GUIDE）都没碰过它。
+
+    两个方向都要钉死：有招牌菜的店**一份菜单都不许拉**（否则性能收益归零），
+    没招牌菜的店**必须**拿到 menus（否则那家店的导购素材直接消失）。
+    """
+    cache = fresh_cache()
+    gw = clawdot.MCPClient(_CFG)
+    cfg = make_config()
+    set_tool_response({"shops": [
+        {"shop_id": "s_rec", "cart_id": "c_rec", "name": "有招牌菜",
+         "recommend_items": [{"item_id": "i1", "name": "招牌", "price": 1800}]},
+        {"shop_id": "s_bare", "cart_id": "c_bare", "name": "没招牌菜"},
+    ]})
+    # 本断言只关心「拉了哪几家的菜单」，菜单内容不重要——罐头响应保持不变即可。
+    calls_before = len(_CALLS)
+    out = run_ok(clawdot.cmd_recommend, parse(["recommend", "--keyword", "x",
+                                               "--lat", "30.1", "--lng", "120.2"]),
+                 gw, cache, cfg, "cg_x", None)
+    menus = out.get("menus") or []
+    check("fallback.present", len(menus) == 1, str(out)[:200])
+    check("fallback.only_bare", menus and menus[0].get("shop_id") == "s_bare", str(menus)[:200])
+    fetched = [rpc_of(c)[1].get("cart_id") for c in _CALLS[calls_before:]
+               if rpc_of(c)[0] == "get_shop_menu"]
+    check("fallback.no_menu_for_rec_shop", "c_rec" not in fetched, str(fetched))
+
+    # 缓存键必须与裸 search_shops 分开：共用的话 recommend 会命中「不带招牌菜」的
+    # 缓存结果，于是每家都判定要回落、把本轮省下的 N 次菜单调用又全花回去。
+    cache2 = fresh_cache()
+    set_tool_response({"shops": [{"shop_id": "s_rec", "cart_id": "c_rec", "name": "有招牌菜"}]})
+    run_ok(clawdot.cmd_search_shops, parse(["search_shops", "--keyword", "x",
+                                            "--lat", "30.1", "--lng", "120.2"]),
+           gw, cache2, cfg, "cg_x", None)          # 裸搜先把 search: 缓存占上
+    set_tool_response({"shops": [
+        {"shop_id": "s_rec", "cart_id": "c_rec", "name": "有招牌菜",
+         "recommend_items": [{"item_id": "i1", "name": "招牌", "price": 1800}]}]})
+    out2 = run_ok(clawdot.cmd_recommend, parse(["recommend", "--keyword", "x",
+                                                "--lat", "30.1", "--lng", "120.2"]),
+                  gw, cache2, cfg, "cg_x", None)
+    check("fallback.cache_key_isolated",
+          bool(out2["shops"][0].get("recommend_items")) and "menus" not in out2,
+          str(out2)[:200])
+
+
+def test_new_tools_registered() -> None:
+    """get_shop_info / get_item_description 要真的挂进命令面，不能只写了函数。"""
+    for name in ("get_shop_info", "get_item_description"):
+        check(f"newcmd.{name}", name in clawdot.COMMANDS, str(sorted(clawdot.COMMANDS)))
+    parser = clawdot.build_parser()
+    args = parser.parse_args(["get_item_description", "--shop-id", "s1", "--item-id", "i1"])
+    check("newcmd.args", args.shop_id == "s1" and args.item_id == "i1", str(args))
+
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -696,6 +896,14 @@ def main() -> int:
         test_flow_threading,
         test_ingredient_quantities,
         test_search_match_level,
+        test_sales_and_promo_surfaced,
+        test_shop_level_monthly_sales_removed,
+        test_recommend_items_surfaced,
+        test_search_shops_switch_is_opt_in,
+        test_coupon_ids_tri_state,
+        test_coupon_ids_reaches_the_wire,
+        test_recommend_fallback_only_when_needed,
+        test_new_tools_registered,
         test_verify_bind_writes_shared_cache,
         test_cred_store_delete,
         test_revoke_user_bind,

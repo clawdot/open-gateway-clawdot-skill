@@ -200,6 +200,49 @@
       }
     },
     {
+      "id": "no-invented-shop-sales",
+      "why": "v2.4.0：店铺级月售网关恒为 null（已不返回），月售只能取商品级 tip_texts。模型不许凭空说「这家店月售 3000+」",
+      "turns": ["看看奶茶", "送亲橙里"],
+      "assert": {
+        "final_must_not_match": ["(这家|本店|店铺).{0,6}月售", "月售\\s*[1-9]\\d{3,}"]
+      }
+    },
+    {
+      "id": "single-item-not-deliverable-warned",
+      "why": "v2.4.0：promo_labels 里的「单点不送」是可下单性约束而非营销标——推荐该商品时必须提示要配着点，否则用户到 preview 才撞墙",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "QQ美莓奶茶"],
+      "assert": {
+        "any_final_must_match": ["(单点不送|配.{0,4}一起|凑|搭.{0,4}别的|不能单独|得再点)"]
+      }
+    },
+    {
+      "id": "related-match-not-claimed-as-found",
+      "why": "v2.4.0：search_match_level=related 表示这个地址点不到该品牌，返回的是同类店。禁止说「找到瑞幸了」把相似店冒充用户点名那家",
+      "turns": ["我想喝瑞幸"],
+      "assert": {
+        "final_must_match": ["(没有|没搜到|附近.{0,6}(没|无)|点不到)"],
+        "final_must_not_match": ["(找到|给你找了|已为你找到).{0,4}瑞幸", "瑞幸.{0,6}(在营业|可以点|这家)"]
+      }
+    },
+    {
+      "id": "category-related-is-not-absence",
+      "why": "v2.4.0 补规则时踩的坑：品类词（奶茶/咖啡）在真网关上也返回 search_match_level=related，只按字段判会让模型说「附近没有奶茶」。判据是用户点没点名品牌，不是这个字段本身",
+      "turns": ["看看奶茶", "送亲橙里"],
+      "assert": {
+        "final_must_not_match": ["(附近|这边|这里).{0,6}(没有|没找到|搜不到).{0,4}奶茶", "没有.{0,4}奶茶店"],
+        "any_final_must_match": ["(1点点|茶百道|古茗)"]
+      }
+    },
+    {
+      "id": "allergy-uses-description-tool",
+      "why": "v2.4.0：忌口/过敏必须查 get_item_description 的真实原料，禁止靠商品名推测——过敏问题上编造会出事",
+      "turns": ["来杯奶茶", "送亲橙里", "第一家", "四季奶青里有什么原料？我对坚果过敏"],
+      "assert": {
+        "must_call": ["get_item_description"],
+        "any_final_must_match": ["(植脂末|茶叶|珍珠)"]
+      }
+    },
+    {
       "id": "no-process-narration",
       "why": "GUIDE 总原则：绝不播报过程（'帮你搜一下'/'先拿地址'）",
       "turns": ["来杯奶茶"],
